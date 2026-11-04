@@ -46,6 +46,7 @@ public static class UsbCopy
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var target = Path.Combine(destination, i == 0 ? fileName : $"{stem} ({i}){extension}");
+                    if (File.Exists(target)) continue;
                     try { SafeDirectories.Publish(output, temp, target); return target; }
                     catch (IOException) when (File.Exists(target)) { }
                 }

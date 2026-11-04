@@ -247,6 +247,7 @@ public sealed class ChunkTransfer
                 for (int n = 0; ; n++)
                 {
                     var target = Path.Combine(destination, n == 0 ? m.Name : $"{name} ({n}){ext}");
+                    if (File.Exists(target)) continue;
                     try
                     {
                         SafeDirectories.Publish(output, staged, target);

@@ -145,6 +145,7 @@ try
             Check(attempt is 0 or 17, "separate process attempted junction replacement");
             Console.WriteLine($"Junction attempt exit: {attempt}; output: {published ?? "rejected"}; target entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}; outside entries: {string.Join(", ", Directory.GetFiles(outside).Select(Path.GetFileName))}");
             Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "outside sentinel hash unchanged");
+            Check(Directory.GetFiles(outside).Length == 1, "no file created outside destination");
             Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "existing destination hash unchanged");
             if (published != null)
             {
@@ -179,6 +180,7 @@ try
             }
             Check(usbAttempt is 0 or 17, "USB separate process attempted junction replacement");
             Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "USB outside sentinel unchanged");
+            Check(Directory.GetFiles(outside).Length == 1, "USB created no file outside destination");
             Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "USB existing file unchanged during race");
             if (usbRace != null) Check(Hash(await File.ReadAllBytesAsync(usbRace)) == Hash(bytes), "USB race output hash matches");
             else Console.WriteLine("PASS USB race safely rejected");
@@ -189,7 +191,9 @@ try
     Check(!File.Exists(Path.Combine(root, "usb.mov")) && !Directory.GetFiles(root, "*.partial").Any(), "USB incomplete file removed");
     var usbPath = await UsbCopy.CopyAsync(new MemoryStream(first), first.Length, root, "usb.mov");
     Check(Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB local read-back hash");
-    var usbSecond = await UsbCopy.CopyAsync(new MemoryStream(first), first.Length, root, "usb.mov");
+    var secondBytes = Chunk(1);
+    var usbSecond = await UsbCopy.CopyAsync(new MemoryStream(secondBytes), secondBytes.Length, root, "usb.mov");
+    Console.WriteLine($"USB first: {usbPath}; second: {usbSecond}; entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}");
     Check(usbPath != usbSecond && Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB existing file preserved");
     Console.WriteLine("All tests passed.");
 }
