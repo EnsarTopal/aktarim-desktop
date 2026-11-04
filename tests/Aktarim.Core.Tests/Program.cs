@@ -229,6 +229,35 @@ try
     var usbSecond = await UsbCopy.CopyAsync(new MemoryStream(secondBytes), secondBytes.Length, root, "usb.mov");
     Console.WriteLine($"USB first: {usbPath}; second: {usbSecond}; entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}");
     Check(usbPath != usbSecond && Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB existing file preserved");
+    var history = new UsbHistory(Path.Combine(root, "history"));
+    var backupRoot = Path.Combine(root, "backup");
+    var backupBytes = System.Text.Encoding.UTF8.GetBytes("first item");
+    var otherBytes = System.Text.Encoding.UTF8.GetBytes("other item");
+    async Task<bool> Backup(string? key, byte[] data)
+    {
+        if (await history.IsBackedUpAsync(key, data.Length, backupRoot)) return false;
+        string? hash = null;
+        var path = await UsbCopy.CopyAsync(new MemoryStream(data), data.Length, backupRoot, "same.jpg", verifiedHash: value => hash = value);
+        await history.AddAsync(key, data.Length, backupRoot, path, hash!);
+        return true;
+    }
+    Check(await Backup("device-object-one-version-one", backupBytes), "new USB item copied");
+    history = new UsbHistory(Path.Combine(root, "history"));
+    Check(!await Backup("device-object-one-version-one", backupBytes), "verified USB backup skipped after restart");
+    Check(await Backup("device-object-two-version-one", otherBytes), "same name different USB identity copied");
+    var firstBackup = Path.Combine(backupRoot, "same.jpg");
+    var secondBackup = Path.Combine(backupRoot, "same (1).jpg");
+    Check(Hash(await File.ReadAllBytesAsync(firstBackup)) == Hash(backupBytes) && Hash(await File.ReadAllBytesAsync(secondBackup)) == Hash(otherBytes), "same named backups preserved");
+    File.Delete(firstBackup);
+    Check(await Backup("device-object-one-version-one", backupBytes) && Hash(await File.ReadAllBytesAsync(firstBackup)) == Hash(backupBytes), "deleted backup recreated");
+    await File.WriteAllTextAsync(firstBackup, "changed");
+    Check(await Backup("device-object-one-version-one", backupBytes) && await File.ReadAllTextAsync(firstBackup) == "changed", "modified backup preserved and recopied");
+    var newest = (await history.EntriesAsync()).Last(x => x.SourceKey == "device-object-one-version-one").Path;
+    File.Move(newest, newest + ".moved");
+    Check(await Backup("device-object-one-version-one", backupBytes), "moved backup recopied");
+    Check(await Backup(null, backupBytes) && await Backup(null, backupBytes), "uncertain USB identity never skipped");
+    Check(!await history.IsBackedUpAsync("device-object-one-version-one", backupBytes.Length, Path.Combine(root, "other-target")), "different destination not skipped");
+    Check((await history.EntriesAsync()).Count == 7, "only successful USB copies recorded");
     Console.WriteLine("All tests passed.");
 }
 finally

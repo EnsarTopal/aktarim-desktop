@@ -19,7 +19,7 @@ public partial class MainWindow
     private readonly List<(bool Success, string Path)> jobs = [];
     private bool busy, listView;
     private string state = "", query = "", activeName = "";
-    private int filter, galleryPage;
+    private int filter, galleryPage, sort;
     private long current, total;
     private TextBlock? statusText, selectionText, countText;
     private Panel? gallery;
@@ -95,6 +95,10 @@ public partial class MainWindow
             var placeholder = Label(T("Dosya adı ara", "Search filename"), 12); placeholder.Foreground = Brush("Muted"); placeholder.Margin = new Thickness(9, 0, 0, 0); placeholder.VerticalAlignment = VerticalAlignment.Center; placeholder.IsHitTestVisible = false; placeholder.Visibility = string.IsNullOrEmpty(query) ? Visibility.Visible : Visibility.Collapsed; searchBox.Children.Add(placeholder);
             search.TextChanged += (_, _) => { query = search.Text; placeholder.Visibility = string.IsNullOrEmpty(query) ? Visibility.Visible : Visibility.Collapsed; galleryPage = 0; UpdateGallery(); };
             toolbar.Children.Add(searchBox);
+            var sorting = new ComboBox { Width = 150, Margin = new Thickness(0, 0, 8, 0), IsEnabled = !busy,
+                ItemsSource = new[] { T("Sıralama: varsayılan", "Sort: default"), T("Tarih: yeni önce", "Date: newest"), T("Tarih: eski önce", "Date: oldest"), T("Boyut: büyük önce", "Size: largest"), T("Boyut: küçük önce", "Size: smallest") }, SelectedIndex = sort };
+            AutomationProperties.SetName(sorting, T("Medya sıralaması", "Media sort order")); AutomationProperties.SetAutomationId(sorting, "SortFiles");
+            sorting.SelectionChanged += (_, _) => { sort = Math.Max(0, sorting.SelectedIndex); galleryPage = 0; UpdateGallery(); }; toolbar.Children.Add(sorting);
             toolbar.Children.Add(MakeButton(listView ? T("Galeri", "Gallery") : T("Liste", "List"), "ToggleView", () => { listView = !listView; galleryPage = 0; Render(); return Task.CompletedTask; }));
             body.Children.Add(toolbar);
             var actions = new WrapPanel { Margin = new Thickness(0, 0, 0, 10) };
@@ -119,12 +123,17 @@ public partial class MainWindow
         AutomationProperties.SetName(path, T("Hedef klasör: ", "Destination: ") + settings.Destination); target.Children.Add(path); Add(bottom, target, 0);
         var bottomActions = new StackPanel { Orientation = Orientation.Horizontal };
         bottomActions.Children.Add(MakeButton(T("Hedefi değiştir", "Change destination"), "ChooseDestination", () => { ChooseFolder(); return Task.CompletedTask; }));
+        var backup = MakeButton(T("Yeni dosyaları yedekle", "Back up new files"), "BackupNew", BackupNew); backup.IsEnabled = !busy && items.Count > 0; bottomActions.Children.Add(backup);
         copyButton = MakeButton(T("Seçileni kopyala", "Copy selected"), "CopySelected", CopySelected, true); bottomActions.Children.Add(copyButton); Add(bottom, bottomActions, 0, 1);
         var bottomBorder = new Border { Background = Brush("Sidebar"), BorderBrush = Brush("Stroke"), BorderThickness = new Thickness(0, 1, 0, 0), Child = bottom };
         Add(UsbHost, bottomBorder, 2);
         if (items.Count > 0) UpdateGallery(); else UpdateSelection();
     }
-    private List<UsbItem> Visible() => items.Where(x => x.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) && (filter == 0 || (filter == 2) == IsVideo(x.Name))).ToList();
+    private List<UsbItem> Visible()
+    {
+        var matching = items.Where(x => x.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) && (filter == 0 || (filter == 2) == IsVideo(x.Name)));
+        return (sort switch { 1 => matching.OrderBy(x => x.Taken == null).ThenByDescending(x => x.Taken), 2 => matching.OrderBy(x => x.Taken == null).ThenBy(x => x.Taken), 3 => matching.OrderByDescending(x => x.Length), 4 => matching.OrderBy(x => x.Length), _ => matching }).ToList();
+    }
     private static bool IsVideo(string name) => new[] { ".mov", ".mp4", ".m4v", ".avi" }.Contains(Path.GetExtension(name), StringComparer.OrdinalIgnoreCase);
     private void UpdateGallery()
     {
@@ -149,6 +158,7 @@ public partial class MainWindow
             previewTiles.Add((item, image, fallback));
             var name = new TextBlock { Text = item.Name, TextTrimming = TextTrimming.CharacterEllipsis, FontWeight = FontWeights.SemiBold, Foreground = Brush("Text") }; content.Children.Add(name);
             var size = Label($"{item.Length:N0} B", 12); size.Foreground = Brush("Muted"); content.Children.Add(size);
+            var date = Label(item.Taken?.ToString("d") ?? T("Tarih bilinmiyor", "Date unknown"), 12); date.Foreground = Brush("Muted"); content.Children.Add(date);
             var check = new CheckBox { Content = content, IsChecked = selectedItems.Contains(item), Width = listView ? 440 : 160, Margin = new Thickness(0, 0, 10, 10), Padding = new Thickness(8), Background = Brush("Surface"), Foreground = Brush("Text"), BorderBrush = Brush("Stroke"), IsEnabled = !busy };
             check.Style = (Style)FindResource("Aktarim.MediaTile");
             AutomationProperties.SetName(check, item.Name);
@@ -229,6 +239,9 @@ public partial class MainWindow
             "copying" => T("Kopyalanıyor: ", "Copying: ") + activeName + $" · {current:N0} / {total:N0} B",
             "verifying" => T("Yerel kopya doğrulanıyor: ", "Verifying local copy: ") + activeName,
             "completed" => T("Yerel kopya doğrulandı: ", "Local copy verified: ") + activeName,
+            "backupdone" => T("Yedekleme bitti: ", "Backup complete: ") + activeName,
+            "checking" => T("Önceki yedek doğrulanıyor: ", "Checking previous backup: ") + activeName,
+            "historyerror" => T("Kopya doğrulandı ancak geçmiş kaydedilemedi; dosya sonraki yedeklemede tekrar kopyalanabilir: ", "Copy verified, but history could not be saved; the file may be copied again on the next backup: ") + activeName,
             "failed" => T("Aktarım başarısız veya bağlantı kesildi. Yarım dosya tamamlanmadı; yeniden seçip baştan deneyin: ", "Transfer failed or connection was interrupted. The partial file was not completed; select it again to restart: ") + activeName,
             "error" => T("Aygıt işlemi başarısız. Kabloyu, kilidi ve güven onayını kontrol edin: ", "Device operation failed. Check cable, lock and trust approval: ") + activeName,
             _ => ""
@@ -263,29 +276,47 @@ public partial class MainWindow
     {
         var selected = items.Where(selectedItems.Contains).ToArray();
         if (selected.Length == 0) return;
+        selectedItems.Clear();
+        await CopyItems(selected, false);
+    }
+    private Task BackupNew() => CopyItems(items.ToArray(), true);
+    private async Task CopyItems(UsbItem[] selected, bool onlyNew)
+    {
+        if (selected.Length == 0) return;
         string destination = settings.Destination;
-        selectedItems.Clear(); busy = true; Render();
+        bool dateFolders = settings.UsbDateFolders;
+        int copied = 0, skipped = 0; bool failed = false;
+        busy = true; Render();
         await deviceGate.WaitAsync();
         try
         {
             foreach (var item in selected)
             {
-                activeName = item.Name; current = 0; total = item.Length; state = "copying"; UpdateStatus();
-                var progress = new Progress<long>(value => { current = value; UpdateStatus(); });
+                string? published = null;
                 try
                 {
+                    activeName = item.Name; state = "checking"; UpdateStatus();
+                    if (onlyNew && await usbHistory.IsBackedUpAsync(item.SourceKey, item.Length, destination)) { skipped++; continue; }
+                    current = 0; total = item.Length; state = "copying"; UpdateStatus();
+                    var progress = new Progress<long>(value => { current = value; UpdateStatus(); });
+                    string target = dateFolders && item.Taken is { } date ? Path.Combine(destination, date.ToString("yyyy", System.Globalization.CultureInfo.InvariantCulture), date.ToString("MM", System.Globalization.CultureInfo.InvariantCulture), date.ToString("dd", System.Globalization.CultureInfo.InvariantCulture)) : destination;
+                    string? hash = null;
                     var path = await Task.Run(async () =>
                     {
                         using var source = item.Open();
-                        return await UsbCopy.CopyAsync(source, item.Length, destination, item.Name, progress: progress,
-                            verifying: () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); }));
+                        return await UsbCopy.CopyAsync(source, item.Length, target, item.Name, progress: progress,
+                            verifying: () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); }), verifiedHash: value => hash = value);
                     });
+                    published = path;
+                    await usbHistory.AddAsync(item.SourceKey, item.Length, destination, path, hash ?? throw new IOException("Missing verified hash."));
+                    copied++;
                     state = "completed"; activeName = item.Name; jobs.Add((true, path));
                 }
-                catch (Exception) { state = "failed"; activeName = item.Name; jobs.Add((false, item.Name)); break; }
+                catch (Exception) { state = published == null ? "failed" : "historyerror"; activeName = item.Name; jobs.Add((false, published ?? item.Name)); failed = true; break; }
                 UpdateStatus();
             }
+            if (onlyNew && !failed) { state = "backupdone"; activeName = $"{copied:N0} " + T("kopyalandı", "copied") + $", {skipped:N0} " + T("atlandı", "skipped"); }
         }
-        finally { deviceGate.Release(); busy = false; Render(); }
+        finally { deviceGate.Release(); busy = false; await RefreshHistory(); Render(); }
     }
 }

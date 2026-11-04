@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation;
 using Microsoft.Win32;
+using Aktarim.Core;
 
 namespace Aktarim.Desktop;
 
@@ -12,9 +13,16 @@ public partial class MainWindow : Window
 {
     private readonly string settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "settings.json");
     private Settings settings;
+    private readonly UsbHistory usbHistory = new();
+    private IReadOnlyList<UsbHistoryEntry> historyEntries = [];
     private int page;
     private string T(string tr, string en) => settings.Language == "tr" ? tr : en;
-    public MainWindow() { InitializeComponent(); settings = Load(); var args = Environment.GetCommandLineArgs(); if (args.Length == 4 && args[1] == "--fake-usb") { fakeRoot = args[2]; settings.Destination = args[3]; } if (SystemParameters.HighContrast) ApplyHighContrast(); SizeChanged += (_, _) => SideColumn.Width = new GridLength(ActualWidth < 1050 ? 160 : 204); Closed += async (_, _) => { if (lan != null) await lan.DisposeAsync(); StopPreviews(); await deviceGate.WaitAsync(); try { foreach (var source in sources) source.Dispose(); } finally { deviceGate.Release(); } }; Render(); }
+    public MainWindow() { InitializeComponent(); settings = Load(); var args = Environment.GetCommandLineArgs(); if (args.Length == 4 && args[1] == "--fake-usb") { fakeRoot = args[2]; settings.Destination = args[3]; } if (SystemParameters.HighContrast) ApplyHighContrast(); SizeChanged += (_, _) => SideColumn.Width = new GridLength(ActualWidth < 1050 ? 160 : 204); Closed += async (_, _) => { if (lan != null) await lan.DisposeAsync(); StopPreviews(); await deviceGate.WaitAsync(); try { foreach (var source in sources) source.Dispose(); } finally { deviceGate.Release(); } }; Render(); _ = RefreshHistory(); }
+    private async Task RefreshHistory()
+    {
+        try { historyEntries = await usbHistory.EntriesAsync(); if (page == 3) Render(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { MessageBox.Show(T("Geçmiş okunamadı: ", "Could not read history: ") + e.Message, "Aktarim"); }
+    }
     private void ApplyHighContrast()
     {
         foreach (var key in new[] { "Background", "Sidebar", "Surface", "Raised" }) Resources["Aktarim." + key] = SystemColors.WindowBrush;
@@ -59,10 +67,15 @@ public partial class MainWindow : Window
                 Paragraph(T("2. iPhone ve bilgisayarı aynı ağa bağla. iPhone’da Dosyalar → Göz At → … → Sunucuya Bağlan yolunu aç ve smb://PC-IP adresini gir.", "2. Connect the iPhone and computer to the same network. On iPhone open Files → Browse → … → Connect to Server and enter smb://PC-IP."));
                 Paragraph(T("3. Windows kullanıcı bilgilerinle giriş yap, paylaşılan klasörü aç ve dosyayı kopyala. Dosyalar uygulamasında tamamlandığını, Windows’ta dosya boyutunu ve oynatmayı kontrol et.", "3. Sign in with your Windows credentials, open the shared folder and copy the file. Check completion in Files and check file size and playback on Windows."));
                 Paragraph(T("Uygulama paylaşım veya güvenlik duvarı ayarlarını değiştirmez. SMB aktarımı otomatik doğrulanmaz veya devam ettirilmez.", "The app does not change sharing or firewall settings. SMB transfers are not automatically verified or resumed.")); break;
-            case 3: Heading(T("Aktarımlar", "Transfers")); foreach (var job in jobs) Paragraph((job.Success ? T("Yerel kopya doğrulandı: ", "Local copy verified: ") : T("Başarısız: ", "Failed: ")) + job.Path); if (jobs.Count == 0) Paragraph(T("Henüz aktarım yok.", "No transfers yet.")); break;
+            case 3: Heading(T("Aktarımlar", "Transfers")); foreach (var job in jobs.Where(x => !x.Success)) Paragraph(T("Başarısız: ", "Failed: ") + job.Path); foreach (var entry in historyEntries.Reverse()) Paragraph(T("Yerel kopya doğrulandı: ", "Local copy verified: ") + entry.Path); if (jobs.Count == 0 && historyEntries.Count == 0) Paragraph(T("Henüz aktarım yok.", "No transfers yet.")); break;
             case 4:
                 Heading(T("Ayarlar", "Settings")); Paragraph(T("Varsayılan hedef: ", "Default destination: ") + settings.Destination);
-                Action(T("Klasör seç", "Choose folder"), ChooseFolder); Paragraph(T("Dili üstteki TR ve EN düğmeleriyle değiştir.", "Change language using the TR and EN buttons above.")); break;
+                Action(T("Klasör seç", "Choose folder"), ChooseFolder);
+                var folders = new CheckBox { Content = T("USB yedeklerini Yıl/Ay/Gün klasörlerine ayır (tarihi bilinmeyenler hedef klasöre)", "Organize USB backups into Year/Month/Day folders (unknown dates stay in destination)"), IsChecked = settings.UsbDateFolders, Margin = new Thickness(0, 0, 0, 16) };
+                AutomationProperties.SetAutomationId(folders, "UsbDateFolders");
+                folders.Checked += (_, _) => { settings.UsbDateFolders = true; Save(); };
+                folders.Unchecked += (_, _) => { settings.UsbDateFolders = false; Save(); }; ContentPanel.Children.Add(folders);
+                Paragraph(T("Dili üstteki TR ve EN düğmeleriyle değiştir.", "Change language using the TR and EN buttons above.")); break;
         }
     }
     private void ChooseFolder()
@@ -78,4 +91,5 @@ public class Settings
 {
     public string Language { get; set; } = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr" ? "tr" : "en";
     public string Destination { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Aktarim");
+    public bool UsbDateFolders { get; set; }
 }
