@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Security.Cryptography;
 
 var root = Path.Combine(Path.GetTempPath(), "aktarim-lan-test-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -41,6 +42,29 @@ try
     Check((await owner.PostAsJsonAsync("/v1/pair", new { code })).StatusCode == HttpStatusCode.Unauthorized, "QR single use");
     string cookie = approved.Headers.GetValues("Set-Cookie").Single().Split(';')[0];
     owner.DefaultRequestHeaders.Add("Cookie", cookie);
+    var data = new byte[16 * 1024 * 1024 + 13];
+    RandomNumberGenerator.Fill(data);
+    string digest = Convert.ToHexString(SHA256.HashData(data));
+    var request = new { name = "e2e.bin", length = data.Length, sha256 = digest };
+    var start = await (await owner.PostAsJsonAsync("/v1/transfers", request)).Content.ReadFromJsonAsync<JsonElement>();
+    var transferId = start.GetProperty("id").GetGuid();
+    async Task PutChunk(int index, byte[] chunk)
+    {
+        using var content = new ByteArrayContent(chunk);
+        using var message = new HttpRequestMessage(HttpMethod.Put, $"/v1/transfers/{transferId}/chunks/{index}") { Content = content };
+        message.Headers.Add("X-Chunk-Sha256", Convert.ToHexString(SHA256.HashData(chunk)));
+        Check((await owner.SendAsync(message)).IsSuccessStatusCode, "HTTP verified chunk " + index);
+    }
+    await PutChunk(0, data[..(16 * 1024 * 1024)]);
+    Check(!File.Exists(Path.Combine(root, "e2e.bin")), "HTTP partial not published");
+    var resumed = await (await owner.PostAsJsonAsync("/v1/transfers", request)).Content.ReadFromJsonAsync<JsonElement>();
+    Check(resumed.GetProperty("chunks").GetArrayLength() == 1, "HTTP reselect resumes verified chunk");
+    await PutChunk(1, data[(16 * 1024 * 1024)..]);
+    var commit = await owner.PostAsync($"/v1/transfers/{transferId}/commit", null);
+    Check(commit.IsSuccessStatusCode, "HTTP commit");
+    Console.WriteLine("Commit: " + await commit.Content.ReadAsStringAsync() + "; files: " + string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName)));
+    Check(Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(Path.Combine(root, "e2e.bin")))) == digest, "HTTP destination SHA-256");
+    Check((await owner.PostAsync($"/v1/transfers/{transferId}/commit", null)).IsSuccessStatusCode, "HTTP repeated commit");
     var created = await owner.PostAsJsonAsync("/v1/transfers", new { name = "test.bin", length = 16777216, sha256 = new string('A', 64) });
     var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
     var held = new List<TcpClient>();

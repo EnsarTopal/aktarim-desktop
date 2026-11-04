@@ -81,7 +81,8 @@ internal sealed class SafeDirectories : IDisposable
         if (!OperatingSystem.IsWindows()) { File.Move(staged, target, false); return; }
         byte[] name = System.Text.Encoding.Unicode.GetBytes(target);
         int nameOffset = (int)Marshal.OffsetOf<RenameInfo>(nameof(RenameInfo.FileName));
-        int length = checked(nameOffset + name.Length);
+        // Windows also reads a terminating UTF-16 NUL when processing the rename.
+        int length = checked(nameOffset + name.Length + sizeof(char));
         IntPtr info = Marshal.AllocHGlobal(length);
         try
         {
