@@ -1,0 +1,52 @@
+name: Windows build and regression
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.403
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Release build
+        run: dotnet build src/Aktarim.Desktop/Aktarim.Desktop.csproj -c Release
+      - name: Isolated Windows storage and USB regression
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'aktarim-local'
+          $env:TEMP = Join-Path $env:RUNNER_TEMP 'aktarim-temp'
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:TEMP | Out-Null
+          dotnet run --project tests/Aktarim.Core.Tests/Aktarim.Core.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: LAN regression
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'aktarim-local'
+          dotnet run --project tests/Aktarim.Lan.Tests/Aktarim.Lan.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Safari queue regression
+        run: node tests/safari-queue.cjs
+      - name: Publish single-file EXE and SHA-256
+        shell: pwsh
+        run: |
+          dotnet publish src/Aktarim.Desktop/Aktarim.Desktop.csproj -c Release -p:PublishProfile=Portable -o artifacts/ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hash = (Get-FileHash artifacts/ci/Aktarim.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Encoding ascii artifacts/ci/Aktarim.exe.sha256 "$hash  Aktarim.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aktarim-win-x64
+          path: |
+            artifacts/ci/Aktarim.exe
+            artifacts/ci/Aktarim.exe.sha256
+          if-no-files-found: error

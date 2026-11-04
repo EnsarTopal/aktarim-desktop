@@ -27,7 +27,12 @@ try
     for (int i = 0; i < count; i++) fullHash.AppendData(Chunk(i));
     var manifest = new Manifest(Guid.NewGuid(), "video.mov", (long)chunkSize * count, Convert.ToHexString(fullHash.GetHashAndReset()), chunkSize);
     var store = new ChunkTransfer(root);
+    await Throws<IOException>(() => store.CreateAsync(manifest with { Id = Guid.NewGuid(), Length = 201L * 1024 * 1024 * 1024 }), "partial storage quota rejected");
+    var expired = manifest with { Id = Guid.NewGuid(), Length = 1 };
+    await store.CreateAsync(expired);
+    File.SetLastWriteTimeUtc(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json"), DateTime.UtcNow.AddDays(-8));
     await store.CreateAsync(manifest);
+    Check(!File.Exists(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json")), "expired partial removed");
     for (int i = 0; i < 8; i++) { var chunk = Chunk(i); await store.PutAsync(manifest.Id, i, chunk, Hash(chunk)); }
     store = new ChunkTransfer(root);
     var status = await store.StatusAsync(manifest.Id);
@@ -49,6 +54,7 @@ try
         {
             Directory.CreateSymbolicLink(link, root);
             ThrowsSync<IOException>(() => new ChunkTransfer(link), "destination symlink rejected");
+            await Throws<IOException>(() => UsbCopy.CopyAsync(new MemoryStream(first), first.Length, Path.Combine(link, "nested"), "usb.mov"), "USB parent symlink rejected");
         }
         finally { if (Directory.Exists(link)) Directory.Delete(link); }
         var junction = root + "-junction";
@@ -60,6 +66,7 @@ try
             await process.WaitForExitAsync();
             Check(process.ExitCode == 0, "junction fixture created");
             ThrowsSync<IOException>(() => new ChunkTransfer(junction), "destination junction rejected");
+            await Throws<IOException>(() => UsbCopy.CopyAsync(new MemoryStream(first), first.Length, Path.Combine(junction, "nested"), "usb.mov"), "USB parent junction rejected");
         }
         finally { if (Directory.Exists(junction)) Directory.Delete(junction); }
     }
@@ -85,6 +92,9 @@ try
     var oldAssembly = Path.Combine(partial, manifest.Id.ToString("N"), "assembled.tmp");
     await File.WriteAllTextAsync(oldAssembly, "preserve");
     string result = await store.CommitAsync(manifest.Id);
+    Check(!Directory.EnumerateFiles(Path.Combine(partial, manifest.Id.ToString("N")), "*.chunk*").Any(), "published chunks removed");
+    Check(await store.CommitAsync(manifest.Id) == result, "repeated commit returns same file");
+    Check(await new ChunkTransfer(root).CompletedAsync(manifest.Id) == result, "completed commit survives restart");
     Check(await File.ReadAllTextAsync(oldAssembly) == "preserve", "existing assembly path preserved");
     Check(File.ReadAllText(Path.Combine(root, manifest.Name)) == "existing", "existing file preserved");
     await using (var output = File.OpenRead(result))
@@ -141,6 +151,36 @@ try
                 Check(Hash(await File.ReadAllBytesAsync(published)) == race.Sha256, "race output SHA-256 matches");
             }
             else Console.WriteLine("PASS race transfer safely rejected");
+            int usbAttempt = -1;
+            string? usbRace = null;
+            try
+            {
+                usbRace = await UsbCopy.CopyAsync(new MemoryStream(bytes), bytes.Length, root, "race.bin", verifying: () =>
+                {
+                    string executable = Environment.ProcessPath ?? throw new Exception("Test executable unavailable.");
+                    var child = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
+                    if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                        child.ArgumentList.Add(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    foreach (var arg in new[] { "--attempt-junction-swap", root, outside }) child.ArgumentList.Add(arg);
+                    using var process = System.Diagnostics.Process.Start(child) ?? throw new Exception("Cannot launch swap process.");
+                    if (!process.WaitForExit(15000)) { process.Kill(true); throw new Exception("Swap process timed out."); }
+                    usbAttempt = process.ExitCode;
+                });
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            finally
+            {
+                if (Directory.Exists(root + "-moved"))
+                {
+                    if (Directory.Exists(root)) Directory.Delete(root);
+                    Directory.Move(root + "-moved", root);
+                }
+            }
+            Check(usbAttempt is 0 or 17, "USB separate process attempted junction replacement");
+            Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "USB outside sentinel unchanged");
+            Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "USB existing file unchanged during race");
+            if (usbRace != null) Check(Hash(await File.ReadAllBytesAsync(usbRace)) == Hash(bytes), "USB race output hash matches");
+            else Console.WriteLine("PASS USB race safely rejected");
         }
         finally { Directory.Delete(outside, true); }
     }
@@ -148,6 +188,8 @@ try
     Check(!File.Exists(Path.Combine(root, "usb.mov")) && !Directory.GetFiles(root, "*.partial").Any(), "USB incomplete file removed");
     var usbPath = await UsbCopy.CopyAsync(new MemoryStream(first), first.Length, root, "usb.mov");
     Check(Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB local read-back hash");
+    var usbSecond = await UsbCopy.CopyAsync(new MemoryStream(first), first.Length, root, "usb.mov");
+    Check(usbPath != usbSecond && Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB existing file preserved");
     Console.WriteLine("All tests passed.");
 }
 finally

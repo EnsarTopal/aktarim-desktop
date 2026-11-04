@@ -44,7 +44,8 @@ async function transfer(file,row){
 $('send').onclick=async()=>{
  const files=Array.from($('file').files);if(!files.length){status.textContent=words[lang].select;return}
  $('send').disabled=true;$('file').disabled=true;$('files').replaceChildren();
- try{for(const file of files){const row=document.createElement('li');row.textContent=file.name;$('files').append(row);$('progress').value=0;try{await transfer(file,row)}catch(e){row.textContent=file.name+' — '+words[lang].failed;throw e}}}
+ let failed=false;
+ try{for(const file of files){const row=document.createElement('li');row.textContent=file.name;$('files').append(row);$('progress').value=0;try{await transfer(file,row)}catch(e){row.textContent=file.name+' — '+words[lang].failed;if(e.message==='auth')throw e;failed=true}}if(failed)status.textContent=words[lang].error}
  catch(e){status.textContent=e.message==='auth'?words[lang].auth:words[lang].error}
  finally{$('send').disabled=false;$('file').disabled=false}
 };

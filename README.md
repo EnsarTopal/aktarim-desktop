@@ -18,4 +18,6 @@ Wi-Fi ekranında iPhone ile aynı yerel ağ arayüzünü seçin. HTTPS için iPh
 
 Fiziksel cihaz adımları ve sertifika ön koşulları için [iPhone test planına](docs/iphone-testleri.md) bakın. Kablosuz aktarımın fiziksel iPhone ve 5 GB üzeri dosya sonuçları henüz bekliyor. Oturum iki saat sürer; tekrar eşleştirme için alıcı yeniden başlatılmalıdır. Aktarım başına dosya sınırı 100 GiB'dir. Çökme sonrası tamamlanmış dosyanın sonucunu tekrar bildirme garantisi yoktur; mevcut hedef dosyalar üzerine yazılmaz.
 
+Wi-Fi yarım aktarımları son etkinlikten itibaren 7 gün saklanır ve yeni aktarım oluşturulurken süresi dolan parçalar temizlenir. Yarım aktarımlar için uygulama genelinde ayrılan dosya boyutu toplamı en fazla 200 GiB'dir; kotayı aşan yeni aktarım reddedilir. Başarıyla doğrulanıp yayımlanan aktarımın parçaları silinir.
+
 Donanımsız testler: `dotnet run --project tests/Aktarim.Core.Tests -c Release`; Release derlemesinden sonra `powershell -ExecutionPolicy Bypass -File tests/usb-ui.ps1 -Language TR` (ve `EN`) ve `tests/usb-previews.ps1`. `tests/lan-ui.ps1 -Mode HTTPS` ve `-Mode HTTP` gerçek WPF onay penceresi ile Chrome/Playwright kullanır; Playwright, jsQR, pngjs ve Chrome gerektirir, test sertifikasına yalnızca test tarayıcısı güvenir. Test ekrandaki QR görüntüsünü çözümler; fiziksel kamera okutması değildir.

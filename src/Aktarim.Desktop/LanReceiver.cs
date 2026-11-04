@@ -119,6 +119,8 @@ internal sealed class LanReceiver : IAsyncDisposable
                 var id = new Guid(identity.AsSpan(0, 16));
                 lock (sync) if (completed.TryGetValue(id, out var finished)) return Results.Ok(new { id, chunkSize = ChunkSize, chunks = Array.Empty<ChunkRecord>(), completed = true, name = Path.GetFileName(finished) });
                 await store.CreateAsync(new Manifest(id, request.Name, request.Length, request.Sha256.ToUpperInvariant(), ChunkSize));
+                var saved = await store.CompletedAsync(id);
+                if (saved != null) { lock (sync) completed[id] = saved; return Results.Ok(new { id, chunkSize = ChunkSize, chunks = Array.Empty<ChunkRecord>(), completed = true, name = Path.GetFileName(saved) }); }
                 lock (sync) allowed.Add(id);
                 var chunks = await store.StatusAsync(id);
                 return Results.Ok(new { id, chunkSize = ChunkSize, chunks, completed = false, name = request.Name });
