@@ -44,7 +44,29 @@ public sealed class ChunkTransfer
             catch (IOException) when (attempt < 300) { await Task.Delay(100, cancellationToken); }
         }
     }
-    private void CheckQuota(Manifest manifest)
+    private void CleanExpired()
+    {
+        using var baseGuard = SafeDirectories.Open(privateBase, privateFrom: privateBase);
+        foreach (var store in Directory.EnumerateDirectories(privateBase))
+        {
+            using var storeGuard = SafeDirectories.Open(store, privateFrom: privateBase);
+            foreach (var dir in Directory.EnumerateDirectories(store))
+            {
+            using var dirGuard = SafeDirectories.Open(dir, privateFrom: privateBase);
+            var file = Path.Combine(dir, "manifest.json");
+            if (!File.Exists(file)) continue;
+            if (!File.Exists(Path.Combine(dir, "completed.json")) && File.GetLastWriteTimeUtc(file) < DateTime.UtcNow - Retention)
+            {
+                FileStream lease;
+                try { lease = new FileStream(Path.Combine(dir, ".active"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+                catch (IOException) { continue; }
+                using (lease)
+                    foreach (var entry in Directory.EnumerateFiles(dir).Where(x => Path.GetFileName(x) != ".active")) File.Delete(entry);
+            }
+            }
+        }
+    }
+    private void CheckQuota(long additional)
     {
         long reserved = 0;
         using var baseGuard = SafeDirectories.Open(privateBase, privateFrom: privateBase);
@@ -56,18 +78,19 @@ public sealed class ChunkTransfer
             using var dirGuard = SafeDirectories.Open(dir, privateFrom: privateBase);
             var file = Path.Combine(dir, "manifest.json");
             if (!File.Exists(file)) continue;
-            if (File.GetLastWriteTimeUtc(file) < DateTime.UtcNow - Retention)
-            {
-                foreach (var entry in Directory.EnumerateFiles(dir)) File.Delete(entry);
-                continue;
-            }
             var existing = JsonSerializer.Deserialize<Manifest>(File.ReadAllText(file), json) ?? throw new IOException("Invalid quota manifest.");
             Validate(existing);
             if (File.Exists(Path.Combine(dir, "completed.json"))) continue;
             reserved = checked(reserved + existing.Length);
             }
         }
-        if (manifest.Length > Quota - reserved) throw new IOException("Partial transfer quota exceeded.");
+        if (additional > Quota - reserved) throw new IOException("Partial transfer quota exceeded.");
+    }
+    public async Task CleanExpiredAsync()
+    {
+        await gate.WaitAsync();
+        try { using var processLock = await LockStore(); CleanExpired(); }
+        finally { gate.Release(); }
     }
     private static bool HashValid(string value) => value is not null && value.Length == 64 && value.All(Uri.IsHexDigit);
     private static void Validate(Manifest m)
@@ -99,7 +122,7 @@ public sealed class ChunkTransfer
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
-    public async Task CreateAsync(Manifest manifest)
+    public async Task<FileStream?> CreateAsync(Manifest manifest, bool holdActive = false)
     {
         Validate(manifest);
         await gate.WaitAsync();
@@ -107,16 +130,18 @@ public sealed class ChunkTransfer
         {
             using var processLock = await LockStore();
             var dir = Dir(manifest.Id);
-            if (!File.Exists(Path.Combine(dir, "manifest.json"))) CheckQuota(manifest);
+            CleanExpired();
+            if (!File.Exists(Path.Combine(dir, "manifest.json"))) CheckQuota(manifest.Length);
             using var guard = SafeDirectories.Open(dir, create: true, privateFrom: privateBase);
             var path = Path.Combine(dir, "manifest.json");
             if (File.Exists(path))
             {
                 if (await ReadManifest(manifest.Id) != manifest) throw new InvalidOperationException("Transfer ID conflict.");
                 File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
-                return;
+                return holdActive ? new FileStream(Path.Combine(dir, ".active"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite) : null;
             }
             await WriteDurable(path, JsonSerializer.SerializeToUtf8Bytes(manifest));
+            return holdActive ? new FileStream(Path.Combine(dir, ".active"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite) : null;
         }
         finally { gate.Release(); }
     }
@@ -133,10 +158,27 @@ public sealed class ChunkTransfer
         {
             using var processLock = await LockStore();
             using var guard = SafeDirectories.Open(Dir(id), privateFrom: privateBase);
-            var path = Path.Combine(Dir(id), "completed.json");
-            return File.Exists(path) ? await File.ReadAllTextAsync(path) : null;
+            return await VerifiedCompletion(id, await ReadManifest(id));
         }
         finally { gate.Release(); }
+    }
+    private async Task<string?> VerifiedCompletion(Guid id, Manifest manifest)
+    {
+        var record = Path.Combine(Dir(id), "completed.json");
+        if (!File.Exists(record)) return null;
+        var path = await File.ReadAllTextAsync(record);
+        try
+        {
+            using var targetGuard = SafeDirectories.Open(destination);
+            if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), destination, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) throw new IOException("Invalid completed path.");
+            await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0 && file.Length == manifest.Length &&
+                Convert.ToHexString(await SHA256.HashDataAsync(file)).Equals(manifest.Sha256, StringComparison.OrdinalIgnoreCase)) return path;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        CheckQuota(manifest.Length);
+        File.Delete(record);
+        return null;
     }
     public Task PutAsync(Guid id, int index, byte[] data, string sha256) => PutAsync(id, index, new MemoryStream(data, false), data.Length, sha256);
     public async Task PutAsync(Guid id, int index, Stream input, long length, string sha256, CancellationToken cancellationToken = default)
@@ -217,7 +259,7 @@ public sealed class ChunkTransfer
             var m = await ReadManifest(id);
             string dir = Dir(id);
             string completedPath = Path.Combine(dir, "completed.json");
-            if (File.Exists(completedPath)) return await File.ReadAllTextAsync(completedPath);
+            if (await VerifiedCompletion(id, m) is { } completed) return completed;
             using var targetGuard = SafeDirectories.Open(destination);
             string staged = Path.Combine(destination, ".aktarim-" + Guid.NewGuid().ToString("N") + ".tmp");
             try

@@ -65,6 +65,33 @@ try
     Console.WriteLine("Commit: " + await commit.Content.ReadAsStringAsync() + "; files: " + string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName)));
     Check(Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(Path.Combine(root, "e2e.bin")))) == digest, "HTTP destination SHA-256");
     Check((await owner.PostAsync($"/v1/transfers/{transferId}/commit", null)).IsSuccessStatusCode, "HTTP repeated commit");
+    await File.WriteAllTextAsync(Path.Combine(root, "e2e.bin"), "changed by user");
+    var changed = await (await owner.PostAsJsonAsync("/v1/transfers", request)).Content.ReadFromJsonAsync<JsonElement>();
+    Check(!changed.GetProperty("completed").GetBoolean(), "HTTP modified completion requires retransfer");
+    await PutChunk(0, data[..(16 * 1024 * 1024)]);
+    await PutChunk(1, data[(16 * 1024 * 1024)..]);
+    var again = await owner.PostAsync($"/v1/transfers/{transferId}/commit", null);
+    var newName = (await again.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("name").GetString()!;
+    Check(newName != "e2e.bin" && await File.ReadAllTextAsync(Path.Combine(root, "e2e.bin")) == "changed by user", "HTTP modified destination preserved");
+    Check(Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(Path.Combine(root, newName)))) == digest, "HTTP retransfer hash verified");
+    File.Delete(Path.Combine(root, newName));
+    var deleted = await (await owner.PostAsJsonAsync("/v1/transfers", request)).Content.ReadFromJsonAsync<JsonElement>();
+    Check(!deleted.GetProperty("completed").GetBoolean(), "HTTP deleted completion requires retransfer");
+    var expiryRequest = new { name = "expired.bin", length = 1, sha256 = Convert.ToHexString(SHA256.HashData(new byte[] { 7 })) };
+    var expiryStart = await (await owner.PostAsJsonAsync("/v1/transfers", expiryRequest)).Content.ReadFromJsonAsync<JsonElement>();
+    var expiryId = expiryStart.GetProperty("id").GetGuid();
+    using (var content = new ByteArrayContent(new byte[] { 7 }))
+    using (var message = new HttpRequestMessage(HttpMethod.Put, $"/v1/transfers/{expiryId}/chunks/0") { Content = content })
+    {
+        message.Headers.Add("X-Chunk-Sha256", expiryRequest.sha256);
+        Check((await owner.SendAsync(message)).IsSuccessStatusCode, "HTTP expiry fixture chunk");
+    }
+    var identity = OperatingSystem.IsWindows() ? Path.GetFullPath(root).ToUpperInvariant() : Path.GetFullPath(root);
+    var storeId = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)));
+    var expiryManifest = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "Partial", storeId, expiryId.ToString("N"), "manifest.json");
+    File.SetLastWriteTimeUtc(expiryManifest, DateTime.UtcNow.AddDays(-8));
+    var reselected = await (await owner.PostAsJsonAsync("/v1/transfers", expiryRequest)).Content.ReadFromJsonAsync<JsonElement>();
+    Check(reselected.GetProperty("chunks").GetArrayLength() == 0, "HTTP same-session reselect removes expired chunks");
     var created = await owner.PostAsJsonAsync("/v1/transfers", new { name = "test.bin", length = 16777216, sha256 = new string('A', 64) });
     var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
     var held = new List<TcpClient>();

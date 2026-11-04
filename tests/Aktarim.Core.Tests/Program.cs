@@ -31,8 +31,24 @@ try
     var expired = manifest with { Id = Guid.NewGuid(), Length = 1 };
     await store.CreateAsync(expired);
     File.SetLastWriteTimeUtc(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json"), DateTime.UtcNow.AddDays(-8));
+    await store.CleanExpiredAsync();
+    Check(!File.Exists(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json")), "startup removes expired partial");
+    await store.CreateAsync(expired);
+    var expiredDir = Path.Combine(partial, expired.Id.ToString("N"));
+    await File.WriteAllTextAsync(Path.Combine(expiredDir, "stale.chunk"), "stale");
+    File.SetLastWriteTimeUtc(Path.Combine(expiredDir, "manifest.json"), DateTime.UtcNow.AddDays(-8));
+    await store.CreateAsync(expired);
+    Check(!File.Exists(Path.Combine(expiredDir, "stale.chunk")), "reselection discards expired chunks");
+    using (await store.CreateAsync(expired, true))
+    {
+        await File.WriteAllTextAsync(Path.Combine(expiredDir, "active.chunk"), "active");
+        File.SetLastWriteTimeUtc(Path.Combine(expiredDir, "manifest.json"), DateTime.UtcNow.AddDays(-8));
+        await new ChunkTransfer(root).CleanExpiredAsync();
+        Check(File.Exists(Path.Combine(expiredDir, "active.chunk")), "active transfer survives cleanup");
+    }
+    await store.CleanExpiredAsync();
+    Check(!File.Exists(Path.Combine(expiredDir, "manifest.json")), "inactive expired transfer removed");
     await store.CreateAsync(manifest);
-    Check(!File.Exists(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json")), "expired partial removed");
     for (int i = 0; i < 8; i++) { var chunk = Chunk(i); await store.PutAsync(manifest.Id, i, chunk, Hash(chunk)); }
     store = new ChunkTransfer(root);
     var status = await store.StatusAsync(manifest.Id);
@@ -99,6 +115,24 @@ try
     Check(File.ReadAllText(Path.Combine(root, manifest.Name)) == "existing", "existing file preserved");
     await using (var output = File.OpenRead(result))
         Check(Convert.ToHexString(await SHA256.HashDataAsync(output)) == manifest.Sha256, "96 MiB resumed file hash");
+    var small = System.Text.Encoding.UTF8.GetBytes("completion verification");
+    var completion = new Manifest(Guid.NewGuid(), "completion.bin", small.Length, Hash(small), 1024);
+    await store.CreateAsync(completion);
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    var completed = await store.CommitAsync(completion.Id);
+    File.Move(completed, completed + ".moved");
+    Check(await store.CompletedAsync(completion.Id) == null, "moved completion invalidated");
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    completed = await store.CommitAsync(completion.Id);
+    await File.WriteAllTextAsync(completed, "changed");
+    Check(await store.CompletedAsync(completion.Id) == null, "modified completion invalidated");
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    var replacement = await store.CommitAsync(completion.Id);
+    Check(replacement != completed && await File.ReadAllTextAsync(completed) == "changed", "modified destination preserved on retransfer");
+    File.Delete(replacement);
+    Check(await store.CompletedAsync(completion.Id) == null, "deleted completion invalidated");
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    Check(Hash(await File.ReadAllBytesAsync(await store.CommitAsync(completion.Id))) == completion.Sha256, "deleted completion retransfer verified");
     if (OperatingSystem.IsWindows())
     {
         var outside = root + "-outside";
