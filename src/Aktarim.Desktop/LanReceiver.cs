@@ -21,7 +21,8 @@ internal sealed class LanReceiver : IAsyncDisposable
     private readonly object sync = new();
     private readonly ChunkTransfer store;
     private readonly HashSet<Guid> allowed = [];
-    private readonly Dictionary<Guid, string> completed = [];
+    private readonly Dictionary<Guid, FileStream> active = [];
+    private readonly SemaphoreSlim selectionGate = new(1, 1);
     private readonly SemaphoreSlim commitGate = new(1, 1);
     private readonly SemaphoreSlim requests = new(8, 8), sessionRequests = new(4, 4);
     private WebApplication? app;
@@ -44,6 +45,7 @@ internal sealed class LanReceiver : IAsyncDisposable
     private static bool Same(string? a, string? b) => a != null && b != null && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
     public async Task StartAsync(IPAddress address, X509Certificate2? certificate)
     {
+        await store.CleanExpiredAsync();
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { ApplicationName = typeof(LanReceiver).Assembly.FullName, ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
         if (Environment.GetEnvironmentVariable("AKTARIM_LAN_DIAGNOSTICS") == "1") builder.Logging.AddConsole().SetMinimumLevel(LogLevel.Debug);
@@ -117,8 +119,16 @@ internal sealed class LanReceiver : IAsyncDisposable
             {
                 var identity = SHA256.HashData(Encoding.UTF8.GetBytes(request.Name + "\n" + request.Length + "\n" + request.Sha256.ToUpperInvariant()));
                 var id = new Guid(identity.AsSpan(0, 16));
-                lock (sync) if (completed.TryGetValue(id, out var finished)) return Results.Ok(new { id, chunkSize = ChunkSize, chunks = Array.Empty<ChunkRecord>(), completed = true, name = Path.GetFileName(finished) });
-                await store.CreateAsync(new Manifest(id, request.Name, request.Length, request.Sha256.ToUpperInvariant(), ChunkSize));
+                await selectionGate.WaitAsync();
+                try
+                {
+                    if (active.Remove(id, out var previous)) previous.Dispose();
+                    var lease = await store.CreateAsync(new Manifest(id, request.Name, request.Length, request.Sha256.ToUpperInvariant(), ChunkSize), true);
+                    if (lease != null) active.Add(id, lease);
+                }
+                finally { selectionGate.Release(); }
+                var saved = await store.CompletedAsync(id);
+                if (saved != null) return Results.Ok(new { id, chunkSize = ChunkSize, chunks = Array.Empty<ChunkRecord>(), completed = true, name = Path.GetFileName(saved) });
                 lock (sync) allowed.Add(id);
                 var chunks = await store.StatusAsync(id);
                 return Results.Ok(new { id, chunkSize = ChunkSize, chunks, completed = false, name = request.Name });
@@ -143,8 +153,7 @@ internal sealed class LanReceiver : IAsyncDisposable
             await commitGate.WaitAsync();
             try
             {
-                if (completed.TryGetValue(id, out var existing)) return Results.Ok(new { name = Path.GetFileName(existing) });
-                var path = await store.CommitAsync(id); lock (sync) completed[id] = path;
+                var path = await store.CommitAsync(id);
                 return Results.Ok(new { name = Path.GetFileName(path) });
             }
             catch (Exception e) when (e is IOException or InvalidOperationException) { return Results.BadRequest(); }
@@ -153,7 +162,7 @@ internal sealed class LanReceiver : IAsyncDisposable
         await app.StartAsync();
         Url = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single().TrimEnd('/');
     }
-    public async ValueTask DisposeAsync() { if (app != null) await app.DisposeAsync(); }
+    public async ValueTask DisposeAsync() { if (app != null) await app.DisposeAsync(); foreach (var lease in active.Values) lease.Dispose(); }
     public static bool PrivateAddress(IPAddress ip)
     {
         if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();

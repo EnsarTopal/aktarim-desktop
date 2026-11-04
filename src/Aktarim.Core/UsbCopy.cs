@@ -15,15 +15,14 @@ public static class UsbCopy
         string[] reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
         if (reserved.Contains(stemName, StringComparer.OrdinalIgnoreCase)) throw new ArgumentException("Reserved filename.", nameof(fileName));
         destination = Path.GetFullPath(destination);
-        Directory.CreateDirectory(destination);
-        if ((File.GetAttributes(destination) & FileAttributes.ReparsePoint) != 0) throw new IOException("Invalid destination.");
+        using var guard = SafeDirectories.Open(destination, create: true);
         string temp = Path.Combine(destination, ".aktarim-" + Guid.NewGuid().ToString("N") + ".partial");
         try
         {
             long count = 0;
             byte[] buffer = new byte[1024 * 1024];
             using var sourceHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, buffer.Length, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            await using (var output = SafeDirectories.CreateStaged(temp))
             {
                 int read;
                 while ((read = await source.ReadAsync(buffer, cancellationToken)) != 0)
@@ -37,21 +36,20 @@ public static class UsbCopy
                 if (count != expectedLength) throw new EndOfStreamException("Source ended before expected length.");
                 await output.FlushAsync(cancellationToken);
                 output.Flush(true);
-            }
-            byte[] expectedHash = sourceHash.GetHashAndReset();
-            verifying?.Invoke();
-            await using (var readBack = new FileStream(temp, FileMode.Open, FileAccess.Read, FileShare.Read, buffer.Length, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                byte[] actualHash = await SHA256.HashDataAsync(readBack, cancellationToken);
+                byte[] expectedHash = sourceHash.GetHashAndReset();
+                verifying?.Invoke();
+                output.Position = 0;
+                byte[] actualHash = await SHA256.HashDataAsync(output, cancellationToken);
                 if (!CryptographicOperations.FixedTimeEquals(expectedHash, actualHash)) throw new InvalidDataException("Local copy hash mismatch.");
-            }
-            string stem = Path.GetFileNameWithoutExtension(fileName), extension = Path.GetExtension(fileName);
-            for (int i = 0; ; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var target = Path.Combine(destination, i == 0 ? fileName : $"{stem} ({i}){extension}");
-                try { File.Move(temp, target, false); return target; }
-                catch (IOException) when (File.Exists(target)) { }
+                string stem = Path.GetFileNameWithoutExtension(fileName), extension = Path.GetExtension(fileName);
+                for (int i = 0; ; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var target = Path.Combine(destination, i == 0 ? fileName : $"{stem} ({i}){extension}");
+                    if (File.Exists(target)) continue;
+                    try { SafeDirectories.Publish(output, temp, target); return target; }
+                    catch (IOException) when (File.Exists(target)) { }
+                }
             }
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }

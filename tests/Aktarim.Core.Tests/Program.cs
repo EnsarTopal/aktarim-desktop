@@ -27,6 +27,27 @@ try
     for (int i = 0; i < count; i++) fullHash.AppendData(Chunk(i));
     var manifest = new Manifest(Guid.NewGuid(), "video.mov", (long)chunkSize * count, Convert.ToHexString(fullHash.GetHashAndReset()), chunkSize);
     var store = new ChunkTransfer(root);
+    await Throws<IOException>(() => store.CreateAsync(manifest with { Id = Guid.NewGuid(), Length = 201L * 1024 * 1024 * 1024 }), "partial storage quota rejected");
+    var expired = manifest with { Id = Guid.NewGuid(), Length = 1 };
+    await store.CreateAsync(expired);
+    File.SetLastWriteTimeUtc(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json"), DateTime.UtcNow.AddDays(-8));
+    await store.CleanExpiredAsync();
+    Check(!File.Exists(Path.Combine(partial, expired.Id.ToString("N"), "manifest.json")), "startup removes expired partial");
+    await store.CreateAsync(expired);
+    var expiredDir = Path.Combine(partial, expired.Id.ToString("N"));
+    await File.WriteAllTextAsync(Path.Combine(expiredDir, "stale.chunk"), "stale");
+    File.SetLastWriteTimeUtc(Path.Combine(expiredDir, "manifest.json"), DateTime.UtcNow.AddDays(-8));
+    await store.CreateAsync(expired);
+    Check(!File.Exists(Path.Combine(expiredDir, "stale.chunk")), "reselection discards expired chunks");
+    using (await store.CreateAsync(expired, true))
+    {
+        await File.WriteAllTextAsync(Path.Combine(expiredDir, "active.chunk"), "active");
+        File.SetLastWriteTimeUtc(Path.Combine(expiredDir, "manifest.json"), DateTime.UtcNow.AddDays(-8));
+        await new ChunkTransfer(root).CleanExpiredAsync();
+        Check(File.Exists(Path.Combine(expiredDir, "active.chunk")), "active transfer survives cleanup");
+    }
+    await store.CleanExpiredAsync();
+    Check(!File.Exists(Path.Combine(expiredDir, "manifest.json")), "inactive expired transfer removed");
     await store.CreateAsync(manifest);
     for (int i = 0; i < 8; i++) { var chunk = Chunk(i); await store.PutAsync(manifest.Id, i, chunk, Hash(chunk)); }
     store = new ChunkTransfer(root);
@@ -49,6 +70,7 @@ try
         {
             Directory.CreateSymbolicLink(link, root);
             ThrowsSync<IOException>(() => new ChunkTransfer(link), "destination symlink rejected");
+            await Throws<IOException>(() => UsbCopy.CopyAsync(new MemoryStream(first), first.Length, Path.Combine(link, "nested"), "usb.mov"), "USB parent symlink rejected");
         }
         finally { if (Directory.Exists(link)) Directory.Delete(link); }
         var junction = root + "-junction";
@@ -60,6 +82,7 @@ try
             await process.WaitForExitAsync();
             Check(process.ExitCode == 0, "junction fixture created");
             ThrowsSync<IOException>(() => new ChunkTransfer(junction), "destination junction rejected");
+            await Throws<IOException>(() => UsbCopy.CopyAsync(new MemoryStream(first), first.Length, Path.Combine(junction, "nested"), "usb.mov"), "USB parent junction rejected");
         }
         finally { if (Directory.Exists(junction)) Directory.Delete(junction); }
     }
@@ -85,10 +108,31 @@ try
     var oldAssembly = Path.Combine(partial, manifest.Id.ToString("N"), "assembled.tmp");
     await File.WriteAllTextAsync(oldAssembly, "preserve");
     string result = await store.CommitAsync(manifest.Id);
+    Check(!Directory.EnumerateFiles(Path.Combine(partial, manifest.Id.ToString("N")), "*.chunk*").Any(), "published chunks removed");
+    Check(await store.CommitAsync(manifest.Id) == result, "repeated commit returns same file");
+    Check(await new ChunkTransfer(root).CompletedAsync(manifest.Id) == result, "completed commit survives restart");
     Check(await File.ReadAllTextAsync(oldAssembly) == "preserve", "existing assembly path preserved");
     Check(File.ReadAllText(Path.Combine(root, manifest.Name)) == "existing", "existing file preserved");
     await using (var output = File.OpenRead(result))
         Check(Convert.ToHexString(await SHA256.HashDataAsync(output)) == manifest.Sha256, "96 MiB resumed file hash");
+    var small = System.Text.Encoding.UTF8.GetBytes("completion verification");
+    var completion = new Manifest(Guid.NewGuid(), "completion.bin", small.Length, Hash(small), 1024);
+    await store.CreateAsync(completion);
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    var completed = await store.CommitAsync(completion.Id);
+    File.Move(completed, completed + ".moved");
+    Check(await store.CompletedAsync(completion.Id) == null, "moved completion invalidated");
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    completed = await store.CommitAsync(completion.Id);
+    await File.WriteAllTextAsync(completed, "changed");
+    Check(await store.CompletedAsync(completion.Id) == null, "modified completion invalidated");
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    var replacement = await store.CommitAsync(completion.Id);
+    Check(replacement != completed && await File.ReadAllTextAsync(completed) == "changed", "modified destination preserved on retransfer");
+    File.Delete(replacement);
+    Check(await store.CompletedAsync(completion.Id) == null, "deleted completion invalidated");
+    await store.PutAsync(completion.Id, 0, small, Hash(small));
+    Check(Hash(await File.ReadAllBytesAsync(await store.CommitAsync(completion.Id))) == completion.Sha256, "deleted completion retransfer verified");
     if (OperatingSystem.IsWindows())
     {
         var outside = root + "-outside";
@@ -133,7 +177,9 @@ try
         try
         {
             Check(attempt is 0 or 17, "separate process attempted junction replacement");
+            Console.WriteLine($"Junction attempt exit: {attempt}; output: {published ?? "rejected"}; target entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}; outside entries: {string.Join(", ", Directory.GetFiles(outside).Select(Path.GetFileName))}");
             Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "outside sentinel hash unchanged");
+            Check(Directory.GetFiles(outside).Length == 1, "no file created outside destination");
             Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "existing destination hash unchanged");
             if (published != null)
             {
@@ -141,6 +187,37 @@ try
                 Check(Hash(await File.ReadAllBytesAsync(published)) == race.Sha256, "race output SHA-256 matches");
             }
             else Console.WriteLine("PASS race transfer safely rejected");
+            int usbAttempt = -1;
+            string? usbRace = null;
+            try
+            {
+                usbRace = await UsbCopy.CopyAsync(new MemoryStream(bytes), bytes.Length, root, "race.bin", verifying: () =>
+                {
+                    string executable = Environment.ProcessPath ?? throw new Exception("Test executable unavailable.");
+                    var child = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
+                    if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                        child.ArgumentList.Add(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    foreach (var arg in new[] { "--attempt-junction-swap", root, outside }) child.ArgumentList.Add(arg);
+                    using var process = System.Diagnostics.Process.Start(child) ?? throw new Exception("Cannot launch swap process.");
+                    if (!process.WaitForExit(15000)) { process.Kill(true); throw new Exception("Swap process timed out."); }
+                    usbAttempt = process.ExitCode;
+                });
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            finally
+            {
+                if (Directory.Exists(root + "-moved"))
+                {
+                    if (Directory.Exists(root)) Directory.Delete(root);
+                    Directory.Move(root + "-moved", root);
+                }
+            }
+            Check(usbAttempt is 0 or 17, "USB separate process attempted junction replacement");
+            Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "USB outside sentinel unchanged");
+            Check(Directory.GetFiles(outside).Length == 1, "USB created no file outside destination");
+            Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "USB existing file unchanged during race");
+            if (usbRace != null) Check(Hash(await File.ReadAllBytesAsync(usbRace)) == Hash(bytes), "USB race output hash matches");
+            else Console.WriteLine("PASS USB race safely rejected");
         }
         finally { Directory.Delete(outside, true); }
     }
@@ -148,14 +225,19 @@ try
     Check(!File.Exists(Path.Combine(root, "usb.mov")) && !Directory.GetFiles(root, "*.partial").Any(), "USB incomplete file removed");
     var usbPath = await UsbCopy.CopyAsync(new MemoryStream(first), first.Length, root, "usb.mov");
     Check(Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB local read-back hash");
+    var secondBytes = Chunk(1);
+    var usbSecond = await UsbCopy.CopyAsync(new MemoryStream(secondBytes), secondBytes.Length, root, "usb.mov");
+    Console.WriteLine($"USB first: {usbPath}; second: {usbSecond}; entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}");
+    Check(usbPath != usbSecond && Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB existing file preserved");
     Console.WriteLine("All tests passed.");
 }
 finally
 {
+    if (Directory.Exists(root + "-moved") && !Directory.Exists(root)) Directory.Move(root + "-moved", root);
     var identity = OperatingSystem.IsWindows() ? Path.GetFullPath(root).ToUpperInvariant() : Path.GetFullPath(root);
     var partial = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "Partial", Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity))));
     if (Directory.Exists(partial)) Directory.Delete(partial, true);
-    Directory.Delete(root, true);
+    if (Directory.Exists(root)) Directory.Delete(root, true);
 }
 
 static void Check(bool condition, string name)
