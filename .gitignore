@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+.vs/
+artifacts/
+**/node_modules/
+*.user
+*.pfx
+*.p12
+*.key
+.env

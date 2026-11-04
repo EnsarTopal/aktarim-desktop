@@ -1,0 +1,187 @@
+using Aktarim.Core;
+using System.Security.Cryptography;
+
+if (args.Length == 3 && args[0] == "--attempt-junction-swap")
+{
+    try { Directory.Move(args[1], args[1] + "-moved"); }
+    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Environment.ExitCode = 17; return; }
+    var command = new System.Diagnostics.ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true };
+    foreach (var arg in new[] { "/c", "mklink", "/J", args[1], args[2] }) command.ArgumentList.Add(arg);
+    using var process = System.Diagnostics.Process.Start(command) ?? throw new Exception("Cannot launch junction attempt.");
+    if (!process.WaitForExit(10000)) { process.Kill(true); Environment.ExitCode = 18; return; }
+    Environment.ExitCode = process.ExitCode == 0 ? 0 : 18;
+    return;
+}
+
+string root = Path.Combine(Path.GetTempPath(), "aktarim-test-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+try
+{
+    const int chunkSize = 4 * 1024 * 1024;
+    const int count = 24;
+    byte[] Chunk(int i) { var bytes = new byte[chunkSize]; new Random(i).NextBytes(bytes); return bytes; }
+    string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+    string identity = OperatingSystem.IsWindows() ? Path.GetFullPath(root).ToUpperInvariant() : Path.GetFullPath(root);
+    string partial = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "Partial", Hash(System.Text.Encoding.UTF8.GetBytes(identity)));
+    using var fullHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    for (int i = 0; i < count; i++) fullHash.AppendData(Chunk(i));
+    var manifest = new Manifest(Guid.NewGuid(), "video.mov", (long)chunkSize * count, Convert.ToHexString(fullHash.GetHashAndReset()), chunkSize);
+    var store = new ChunkTransfer(root);
+    await store.CreateAsync(manifest);
+    for (int i = 0; i < 8; i++) { var chunk = Chunk(i); await store.PutAsync(manifest.Id, i, chunk, Hash(chunk)); }
+    store = new ChunkTransfer(root);
+    var status = await store.StatusAsync(manifest.Id);
+    Check(status.Count == 8, "verified chunks survive restart");
+    Check(!File.Exists(Path.Combine(root, manifest.Name)), "interrupted file is not published");
+    var first = Chunk(0);
+    if (OperatingSystem.IsWindows())
+    {
+        var transferDir = Path.Combine(partial, manifest.Id.ToString("N"));
+        var paused = new PausingStream(first);
+        var put = store.PutAsync(manifest.Id, 0, paused, first.Length, Hash(first));
+        await paused.Started.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        try { ThrowsSync<IOException>(() => Directory.Move(transferDir, transferDir + "-moved"), "transfer directory cannot be replaced during write"); }
+        finally { paused.Release.TrySetResult(); await put; }
+        using (SafeDirectories.Open(root))
+            ThrowsSync<IOException>(() => Directory.Move(root, root + "-moved"), "destination directory cannot be replaced while guarded");
+        var link = root + "-link";
+        try
+        {
+            Directory.CreateSymbolicLink(link, root);
+            ThrowsSync<IOException>(() => new ChunkTransfer(link), "destination symlink rejected");
+        }
+        finally { if (Directory.Exists(link)) Directory.Delete(link); }
+        var junction = root + "-junction";
+        try
+        {
+            var command = new System.Diagnostics.ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var arg in new[] { "/c", "mklink", "/J", junction, root }) command.ArgumentList.Add(arg);
+            using var process = System.Diagnostics.Process.Start(command) ?? throw new Exception("Cannot create junction fixture.");
+            await process.WaitForExitAsync();
+            Check(process.ExitCode == 0, "junction fixture created");
+            ThrowsSync<IOException>(() => new ChunkTransfer(junction), "destination junction rejected");
+        }
+        finally { if (Directory.Exists(junction)) Directory.Delete(junction); }
+    }
+    await store.PutAsync(manifest.Id, 0, first, Hash(first));
+    var wrong = Chunk(25);
+    await Throws<InvalidDataException>(() => store.PutAsync(manifest.Id, 8, new MemoryStream(wrong[..100]), wrong.Length, Hash(wrong)), "truncated streamed chunk rejected");
+    await Throws<InvalidDataException>(() => store.PutAsync(manifest.Id, 8, new MemoryStream(wrong), wrong.Length - 1, Hash(wrong)), "wrong declared chunk size rejected");
+    Check((await store.StatusAsync(manifest.Id)).Count == 8, "truncated streamed chunk not acknowledged");
+    await Throws<InvalidOperationException>(() => store.PutAsync(manifest.Id, 0, wrong, Hash(wrong)), "conflicting retry");
+    await Throws<InvalidDataException>(() => store.PutAsync(manifest.Id, 8, wrong, new string('0', 64)), "incorrect chunk hash");
+    await Throws<InvalidOperationException>(() => store.CreateAsync(manifest with { Sha256 = new string('0', 64) }), "different source cannot resume");
+    await Throws<ArgumentException>(() => store.CreateAsync(manifest with { Id = Guid.NewGuid(), Name = "../escape" }), "path traversal");
+    for (int i = 8; i < count; i++) { var chunk = Chunk(i); await store.PutAsync(manifest.Id, i, chunk, Hash(chunk)); }
+    var chunkFile = Path.Combine(partial, manifest.Id.ToString("N"), "0000000003.chunk");
+    await File.WriteAllBytesAsync(chunkFile, wrong);
+    Check((await store.StatusAsync(manifest.Id)).Count == count - 1, "corrupt chunk not acknowledged");
+    await Throws<InvalidDataException>(() => store.CommitAsync(manifest.Id), "corrupt file not committed");
+    Check(!File.Exists(Path.Combine(root, manifest.Name)), "corrupt file not published");
+    var repair = Chunk(3);
+    await store.PutAsync(manifest.Id, 3, repair, Hash(repair));
+    Check((await store.StatusAsync(manifest.Id)).Count == count, "corrupt chunk replaced on retry");
+    await File.WriteAllTextAsync(Path.Combine(root, manifest.Name), "existing");
+    var oldAssembly = Path.Combine(partial, manifest.Id.ToString("N"), "assembled.tmp");
+    await File.WriteAllTextAsync(oldAssembly, "preserve");
+    string result = await store.CommitAsync(manifest.Id);
+    Check(await File.ReadAllTextAsync(oldAssembly) == "preserve", "existing assembly path preserved");
+    Check(File.ReadAllText(Path.Combine(root, manifest.Name)) == "existing", "existing file preserved");
+    await using (var output = File.OpenRead(result))
+        Check(Convert.ToHexString(await SHA256.HashDataAsync(output)) == manifest.Sha256, "96 MiB resumed file hash");
+    if (OperatingSystem.IsWindows())
+    {
+        var outside = root + "-outside";
+        Directory.CreateDirectory(outside);
+        var externalFile = Path.Combine(outside, "race (1).bin");
+        var existingFile = Path.Combine(root, "race.bin");
+        await File.WriteAllTextAsync(externalFile, "outside sentinel");
+        await File.WriteAllTextAsync(existingFile, "existing sentinel");
+        var externalHash = Hash(await File.ReadAllBytesAsync(externalFile));
+        var existingHash = Hash(await File.ReadAllBytesAsync(existingFile));
+        var bytes = System.Text.Encoding.UTF8.GetBytes("verified transfer");
+        var race = new Manifest(Guid.NewGuid(), "race.bin", bytes.Length, Hash(bytes), 1024);
+        await store.CreateAsync(race);
+        await store.PutAsync(race.Id, 0, bytes, Hash(bytes));
+        int attempt = -1;
+        store.BeforePublishForTest = () =>
+        {
+            string executable = Environment.ProcessPath ?? throw new Exception("Test executable unavailable.");
+            var child = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
+            if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                child.ArgumentList.Add(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            foreach (var arg in new[] { "--attempt-junction-swap", root, outside }) child.ArgumentList.Add(arg);
+            using var process = System.Diagnostics.Process.Start(child) ?? throw new Exception("Cannot launch swap process.");
+            if (!process.WaitForExit(15000)) { process.Kill(true); throw new Exception("Swap process timed out."); }
+            attempt = process.ExitCode;
+        };
+        string? published = null;
+        try
+        {
+            try { published = await store.CommitAsync(race.Id); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+        finally
+        {
+            store.BeforePublishForTest = null;
+            if (Directory.Exists(root + "-moved"))
+            {
+                if (Directory.Exists(root)) Directory.Delete(root);
+                Directory.Move(root + "-moved", root);
+            }
+        }
+        try
+        {
+            Check(attempt is 0 or 17, "separate process attempted junction replacement");
+            Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "outside sentinel hash unchanged");
+            Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "existing destination hash unchanged");
+            if (published != null)
+            {
+                Check(Path.GetDirectoryName(published) == root, "published to selected directory");
+                Check(Hash(await File.ReadAllBytesAsync(published)) == race.Sha256, "race output SHA-256 matches");
+            }
+            else Console.WriteLine("PASS race transfer safely rejected");
+        }
+        finally { Directory.Delete(outside, true); }
+    }
+    await Throws<EndOfStreamException>(() => UsbCopy.CopyAsync(new MemoryStream(first), first.Length + 1, root, "usb.mov"), "USB interrupted source");
+    Check(!File.Exists(Path.Combine(root, "usb.mov")) && !Directory.GetFiles(root, "*.partial").Any(), "USB incomplete file removed");
+    var usbPath = await UsbCopy.CopyAsync(new MemoryStream(first), first.Length, root, "usb.mov");
+    Check(Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB local read-back hash");
+    Console.WriteLine("All tests passed.");
+}
+finally
+{
+    var identity = OperatingSystem.IsWindows() ? Path.GetFullPath(root).ToUpperInvariant() : Path.GetFullPath(root);
+    var partial = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "Partial", Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity))));
+    if (Directory.Exists(partial)) Directory.Delete(partial, true);
+    Directory.Delete(root, true);
+}
+
+static void Check(bool condition, string name)
+{
+    if (!condition) throw new Exception("FAILED: " + name);
+    Console.WriteLine("PASS " + name);
+}
+static async Task Throws<T>(Func<Task> action, string name) where T : Exception
+{
+    try { await action(); } catch (T) { Console.WriteLine("PASS " + name); return; }
+    throw new Exception("FAILED: " + name);
+}
+static void ThrowsSync<T>(Action action, string name) where T : Exception
+{
+    try { action(); } catch (T) { Console.WriteLine("PASS " + name); return; }
+    throw new Exception("FAILED: " + name);
+}
+
+sealed class PausingStream(byte[] bytes) : MemoryStream(bytes, false)
+{
+    public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        Started.TrySetResult();
+        await Release.Task.WaitAsync(cancellationToken);
+        return await base.ReadAsync(buffer, cancellationToken);
+    }
+}

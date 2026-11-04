@@ -1,0 +1,106 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="Aktarim.Background" Color="#101318" />
+    <SolidColorBrush x:Key="Aktarim.Sidebar" Color="#15191F" />
+    <SolidColorBrush x:Key="Aktarim.Surface" Color="#1A2028" />
+    <SolidColorBrush x:Key="Aktarim.Raised" Color="#212833" />
+    <SolidColorBrush x:Key="Aktarim.Stroke" Color="#303947" />
+    <SolidColorBrush x:Key="Aktarim.ControlStroke" Color="#3B485A" />
+    <SolidColorBrush x:Key="Aktarim.Text" Color="#EDF1F7" />
+    <SolidColorBrush x:Key="Aktarim.Muted" Color="#A9B5C5" />
+    <SolidColorBrush x:Key="Aktarim.Accent" Color="#8AF0C7" />
+    <SolidColorBrush x:Key="Aktarim.OnAccent" Color="#092A20" />
+    <SolidColorBrush x:Key="Aktarim.Focus" Color="#FFDC84" />
+    <SolidColorBrush x:Key="Aktarim.Warning" Color="#FFD7A0" />
+    <CornerRadius x:Key="Aktarim.CardRadius">12</CornerRadius>
+    <CornerRadius x:Key="Aktarim.ButtonRadius">8</CornerRadius>
+    <Thickness x:Key="Aktarim.PagePadding">24,20</Thickness>
+
+    <Style x:Key="Aktarim.Button" TargetType="{x:Type Button}">
+        <Setter Property="Background" Value="{DynamicResource Aktarim.Raised}" />
+        <Setter Property="Foreground" Value="{DynamicResource Aktarim.Text}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Aktarim.ControlStroke}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type Button}">
+                    <Border x:Name="Frame" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource Aktarim.ButtonRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Frame" Property="Opacity" Value="0.88" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Frame" Property="Opacity" Value="0.72" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Aktarim.Focus}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Frame" Property="Opacity" Value="0.52" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="Aktarim.PrimaryButton" TargetType="{x:Type Button}" BasedOn="{StaticResource Aktarim.Button}">
+        <Setter Property="Background" Value="{DynamicResource Aktarim.Accent}" />
+        <Setter Property="Foreground" Value="{DynamicResource Aktarim.OnAccent}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Aktarim.Accent}" />
+    </Style>
+
+    <Style x:Key="Aktarim.Card" TargetType="{x:Type Border}">
+        <Setter Property="Background" Value="{DynamicResource Aktarim.Surface}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Aktarim.Stroke}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource Aktarim.CardRadius}" />
+        <Setter Property="Padding" Value="14" />
+    </Style>
+    <Style x:Key="Aktarim.MediaTile" TargetType="CheckBox">
+        <Setter Property="Background" Value="{DynamicResource Aktarim.Surface}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Aktarim.Stroke}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Template">
+            <Setter.Value><ControlTemplate TargetType="CheckBox">
+                <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="9" Padding="8">
+                    <Grid><ContentPresenter HorizontalAlignment="Stretch"/><Border x:Name="Mark" HorizontalAlignment="Right" VerticalAlignment="Top" Width="22" Height="22" BorderBrush="{DynamicResource Aktarim.Muted}" BorderThickness="1" Background="{DynamicResource Aktarim.Background}" CornerRadius="4"><TextBlock x:Name="Tick" Text="✓" Visibility="Hidden" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource Aktarim.OnAccent}" FontWeight="Bold"/></Border></Grid>
+                </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsChecked" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Aktarim.Accent}"/><Setter TargetName="Frame" Property="BorderThickness" Value="2"/><Setter TargetName="Mark" Property="Background" Value="{DynamicResource Aktarim.Accent}"/><Setter TargetName="Tick" Property="Visibility" Value="Visible"/></Trigger>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Aktarim.Muted}"/></Trigger>
+                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{DynamicResource Aktarim.Focus}"/><Setter TargetName="Frame" Property="BorderThickness" Value="2"/></Trigger>
+                    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Frame" Property="Opacity" Value="0.55"/></Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate></Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource Aktarim.Sidebar}"/><Setter Property="Foreground" Value="{DynamicResource Aktarim.Text}"/><Setter Property="CaretBrush" Value="{DynamicResource Aktarim.Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Aktarim.ControlStroke}"/><Setter Property="Padding" Value="8,6"/>
+        <Style.Triggers><Trigger Property="IsKeyboardFocused" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Aktarim.Focus}"/><Setter Property="BorderThickness" Value="2"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.55"/></Trigger></Style.Triggers>
+    </Style>
+    <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="{DynamicResource Aktarim.Raised}"/><Setter Property="Foreground" Value="{DynamicResource Aktarim.Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Aktarim.ControlStroke}"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox">
+              <Grid><ToggleButton x:Name="Toggle" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" Focusable="False" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" Foreground="{TemplateBinding Foreground}" HorizontalContentAlignment="Stretch">
+                <Grid><ContentPresenter Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}" Margin="8,0,25,0" VerticalAlignment="Center"/><TextBlock Text="⌄" HorizontalAlignment="Right" Margin="0,0,8,0" Foreground="{TemplateBinding Foreground}"/></Grid></ToggleButton>
+              <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False"><Border Background="{DynamicResource Aktarim.Raised}" BorderBrush="{DynamicResource Aktarim.ControlStroke}" BorderThickness="1" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"><ScrollViewer MaxHeight="300"><ItemsPresenter/></ScrollViewer></Border></Popup>
+            </Grid>
+            <ControlTemplate.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Toggle" Property="BorderBrush" Value="{DynamicResource Aktarim.Focus}"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="Toggle" Property="Opacity" Value="0.55"/></Trigger></ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="ComboBoxItem"><Setter Property="Background" Value="{DynamicResource Aktarim.Raised}"/><Setter Property="Foreground" Value="{DynamicResource Aktarim.Text}"/><Setter Property="Padding" Value="8,5"/></Style>
+    <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource Aktarim.Raised}"/><Setter Property="Foreground" Value="{DynamicResource Aktarim.Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Aktarim.ControlStroke}"/></Style>
+    <Style TargetType="ProgressBar"><Setter Property="Foreground" Value="{DynamicResource Aktarim.Accent}"/><Setter Property="Background" Value="{DynamicResource Aktarim.Raised}"/></Style>
+</ResourceDictionary>

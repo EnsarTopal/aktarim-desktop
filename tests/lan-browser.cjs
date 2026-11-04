@@ -1,0 +1,53 @@
+const { chromium } = require(process.env.AKTARIM_PLAYWRIGHT);
+const fs = require('fs');
+const crypto = require('crypto');
+const path = require('path');
+(async()=>{
+ const root=process.env.AKTARIM_TEST_ROOT, url=process.env.AKTARIM_PAIR_URL;
+ const modules=path.dirname(process.env.AKTARIM_PLAYWRIGHT), png=require(path.join(modules,'pngjs')).PNG.sync.read(fs.readFileSync(process.env.AKTARIM_QR_FILE));
+ const qr=require(path.join(modules,'jsqr'))(new Uint8ClampedArray(png.data),png.width,png.height);
+ if(!qr || qr.data!==url)throw Error('Rendered WPF QR did not decode to pairing URL');
+ const input=path.join(root,'sample.bin'), output=path.join(root,'target','sample.bin'), extra=path.join(root,'extra.bin'), resumed=path.join(root,'resume.bin');
+ fs.writeFileSync(input,crypto.randomBytes(35*1024*1024)); fs.writeFileSync(extra,crypto.randomBytes(1024));fs.writeFileSync(resumed,crypto.randomBytes(35*1024*1024));
+ const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',args:['--no-proxy-server']});
+ try {
+  const ctx=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:320,height:700},isMobile:true,hasTouch:true}); const page=await ctx.newPage();
+  await page.addInitScript(()=>{Object.defineProperty(crypto,'subtle',{value:undefined})});
+  await page.goto(url);
+  await page.locator('#en').click();
+  await page.locator('#transfer').waitFor({state:'visible',timeout:30000});
+  if(!await page.locator('#file').evaluate(e=>e.multiple))throw Error('Multiple selection missing');
+  for(const width of [320,375,390,430]){await page.setViewportSize({width,height:700});if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth || document.querySelector('.file-picker').getBoundingClientRect().right>document.querySelector('#transfer').getBoundingClientRect().right))throw Error('Mobile layout overflows at '+width)}
+  await page.locator('#file').setInputFiles([input,extra]);
+  let failed=false;
+  await page.route('**/v1/transfers/*/chunks/1',async route=>{if(!failed){failed=true;await ctx.setOffline(true);await route.abort('connectionreset')}else await route.continue()});
+  await page.locator('#send').click();
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Waiting for connection'),null,{timeout:120000});
+  if(!failed || fs.existsSync(output)) throw Error('Interrupted transfer was published or not interrupted');
+  const storage=path.join(process.env.LOCALAPPDATA,'Aktarim','Partial',crypto.createHash('sha256').update(path.resolve(root,'target').toUpperCase()).digest('hex').toUpperCase());
+  const dirs=fs.readdirSync(storage); if(dirs.length!==1 || !fs.existsSync(path.join(storage,dirs[0],'0000000000.chunk')))throw Error('First chunk not retained');
+  const sent=[];page.on('request',req=>{if(req.method()==='PUT')sent.push(req.url())});
+  await ctx.setOffline(false);
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Verified and saved:'),null,{timeout:120000});
+  await page.waitForFunction(()=>!document.querySelector('#send').disabled,null,{timeout:120000});
+  if(!fs.existsSync(path.join(root,'target','extra.bin')))throw Error('Second selected file missing');
+  if(sent.filter(x=>x.endsWith('/1')).length!==1 || sent.filter(x=>x.endsWith('/2')).length!==1)throw Error('Automatic retry did not complete first file');
+  const hash=f=>crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+  if(hash(input)!==hash(output)||hash(extra)!==hash(path.join(root,'target','extra.bin')))throw Error('Final SHA-256 mismatch');
+  await page.unrouteAll();failed=false;
+  await page.locator('#file').setInputFiles(resumed);
+  await page.route('**/v1/transfers/*/chunks/1',async route=>{if(!failed){failed=true;await ctx.setOffline(true);await route.abort('connectionreset')}else await route.continue()});
+  await page.locator('#send').click();await page.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Waiting for connection'),null,{timeout:120000});
+  await ctx.setOffline(false);await page.close();
+  const newPage=await ctx.newPage();await newPage.goto(url.split('#')[0]);await newPage.locator('#transfer').waitFor({state:'visible'});await newPage.locator('#file').setInputFiles(resumed);
+  const resumedSent=[];newPage.on('request',req=>{if(req.method()==='PUT')resumedSent.push(req.url())});await newPage.locator('#send').click();
+  await newPage.waitForFunction(()=>document.querySelector('#status').textContent.startsWith('Verified and saved:'),null,{timeout:120000});
+  if(resumedSent.length!==2||resumedSent.some(x=>x.endsWith('/0')))throw Error('Verified chunk not reused after reopening');
+  if(hash(resumed)!==hash(path.join(root,'target','resume.bin')))throw Error('Resumed file hash mismatch');
+  await newPage.locator('#file').setInputFiles([input,extra]);const duplicate=[];newPage.on('request',req=>{if(req.method()==='PUT')duplicate.push(req.url())});await newPage.locator('#send').click();await newPage.waitForFunction(()=>!document.querySelector('#send').disabled,null,{timeout:120000});if(duplicate.length||fs.existsSync(path.join(root,'target','sample (1).bin')))throw Error('Completed files duplicated on retry');
+  await newPage.locator('#tr').click();if(!((await newPage.locator('h1').textContent()).includes('gönder')))throw Error('TR translation missing');
+  const another=await browser.newContext({ignoreHTTPSErrors:true}); const second=await another.newPage(); await second.goto(url); await second.waitForTimeout(1000); if(await second.locator('#transfer').isVisible())throw Error('One-time QR was reused'); await another.close();
+  if(url.startsWith('http:') && !(await newPage.locator('#security').textContent()).includes('Şifresiz'))throw Error('HTTP warning missing');
+  console.log('PASS '+new URL(url).protocol+' mobile layout, multiple files, offline retry, new-tab resume, verified chunks, SHA-256, no duplicate and TR/EN');
+ } finally {await browser.close()}
+})().catch(e=>{console.error(e);process.exit(1)});

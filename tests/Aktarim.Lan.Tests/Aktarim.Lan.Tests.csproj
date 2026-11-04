@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /><ProjectReference Include="../../src/Aktarim.Core/Aktarim.Core.csproj" /><Compile Include="../../src/Aktarim.Desktop/LanReceiver.cs" Link="LanReceiver.cs" /></ItemGroup>
+  <ItemGroup><EmbeddedResource Include="../../src/Aktarim.Desktop/Web/*" LogicalName="Aktarim.Web.%(Filename)%(Extension)" /></ItemGroup>
+</Project>

@@ -1,0 +1,13 @@
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.IO;
+using System;
+var key = RSA.Create(2048);
+var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+var names = new SubjectAlternativeNameBuilder(); names.AddDnsName("localhost"); names.AddIpAddress(System.Net.IPAddress.Loopback);
+request.CertificateExtensions.Add(names.Build());
+request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+File.WriteAllBytes(Args[0], cert.Export(X509ContentType.Pfx, "test-only"));
+cert.Dispose(); key.Dispose();
