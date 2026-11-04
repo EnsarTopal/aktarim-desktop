@@ -194,10 +194,11 @@ try
 }
 finally
 {
+    if (Directory.Exists(root + "-moved") && !Directory.Exists(root)) Directory.Move(root + "-moved", root);
     var identity = OperatingSystem.IsWindows() ? Path.GetFullPath(root).ToUpperInvariant() : Path.GetFullPath(root);
     var partial = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "Partial", Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity))));
     if (Directory.Exists(partial)) Directory.Delete(partial, true);
-    Directory.Delete(root, true);
+    if (Directory.Exists(root)) Directory.Delete(root, true);
 }
 
 static void Check(bool condition, string name)
