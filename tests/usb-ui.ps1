@@ -61,6 +61,9 @@ try {
     if (Get-ChildItem $target -Filter "*.partial") { throw "Interrupted temporary file remained." }
     $status = (Find-Element "UsbStatus").Current.Name
     if ($status -notmatch "^(Transfer failed|Aktar).+disconnect-b\.mov") { throw "Failure was not displayed: $status" }
+    $historyPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Aktarim/UsbHistory/history.json'
+    $entries = @(Get-Content -LiteralPath $historyPath -Raw | ConvertFrom-Json | Where-Object { $_.Destination -eq $target })
+    if ($entries.Count -ne 1 -or [IO.Path]::GetFileName($entries[0].Path) -ne 'a-good.mov') { throw 'Interrupted copy was added to history or verified copy missing.' }
     [IO.File]::WriteAllText((Join-Path $source "reconnected"), "")
     $element = Find-Element "File-1"
     $element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
