@@ -9,7 +9,7 @@ using System.Runtime.CompilerServices;
 
 namespace Aktarim.Core;
 
-// Denying write and delete sharing protects each checked directory until the operation ends.
+// Denying delete sharing protects each checked directory until the operation ends.
 internal sealed class SafeDirectories : IDisposable
 {
     private readonly List<SafeFileHandle> handles = [];
@@ -46,7 +46,7 @@ internal sealed class SafeDirectories : IDisposable
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new IOException("Directory links are not allowed.");
             return;
         }
-        var handle = CreateFile(path, 0x1, 0x1, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero);
+        var handle = CreateFile(path, 0x1, 0x3, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero);
         if (handle.IsInvalid) { int error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new IOException("Cannot safely open directory.", new Win32Exception(error)); }
         handles.Add(handle);
         if (!GetFileInformationByHandleEx(handle, 9, out var info, (uint)Marshal.SizeOf<AttributeTag>()))
