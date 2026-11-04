@@ -244,19 +244,17 @@ public sealed class ChunkTransfer
                     throw new InvalidDataException("Destination hash mismatch.");
                 BeforePublishForTest?.Invoke();
                 var name = Path.GetFileNameWithoutExtension(m.Name); var ext = Path.GetExtension(m.Name);
+                string published;
                 for (int n = 0; ; n++)
                 {
                     var target = Path.Combine(destination, n == 0 ? m.Name : $"{name} ({n}){ext}");
                     if (File.Exists(target)) continue;
-                    try
-                    {
-                        SafeDirectories.Publish(output, staged, target);
-                        await WriteDurable(completedPath, System.Text.Encoding.UTF8.GetBytes(target));
-                        foreach (var file in Directory.EnumerateFiles(dir, "*.chunk*")) File.Delete(file);
-                        return target;
-                    }
+                    try { SafeDirectories.Publish(output, staged, target); published = target; break; }
                     catch (IOException) when (File.Exists(target)) { }
                 }
+                await WriteDurable(completedPath, System.Text.Encoding.UTF8.GetBytes(published));
+                foreach (var file in Directory.EnumerateFiles(dir, "*.chunk*")) File.Delete(file);
+                return published;
             }
             finally { if (File.Exists(staged)) File.Delete(staged); }
         }
