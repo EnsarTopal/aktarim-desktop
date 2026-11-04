@@ -143,6 +143,7 @@ try
         try
         {
             Check(attempt is 0 or 17, "separate process attempted junction replacement");
+            Console.WriteLine($"Junction attempt exit: {attempt}; output: {published ?? "rejected"}; target entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}; outside entries: {string.Join(", ", Directory.GetFiles(outside).Select(Path.GetFileName))}");
             Check(Hash(await File.ReadAllBytesAsync(externalFile)) == externalHash, "outside sentinel hash unchanged");
             Check(Hash(await File.ReadAllBytesAsync(existingFile)) == existingHash, "existing destination hash unchanged");
             if (published != null)
