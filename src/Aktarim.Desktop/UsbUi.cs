@@ -36,6 +36,7 @@ public partial class MainWindow
     private CancellationTokenSource? previewCancellation;
     private CancellationTokenSource? backupCancellation;
     private bool manualCopy;
+    private List<UsbItem>? activeQueue;
     private TaskCompletionSource<bool>? backupResume;
     private bool backupPauseRequested, backupClosing;
     private readonly Dictionary<UsbItem, BitmapSource?> previewCache = [];
@@ -105,6 +106,7 @@ public partial class MainWindow
             {
                 int type = i;
                 var button = MakeButton(labels[i], "Filter" + i, () => { filter = type; galleryPage = 0; Render(); return Task.CompletedTask; }, filter == i);
+                button.IsEnabled = !busy || backupResume != null;
                 toolbar.Children.Add(button);
             }
             var search = new TextBox { Text = query, Width = 205, MinHeight = 36, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 8, 0), ToolTip = T("Dosya adı ara", "Search filename") };
@@ -113,23 +115,23 @@ public partial class MainWindow
             var placeholder = Label(T("Dosya adı ara", "Search filename"), 12); placeholder.Foreground = Brush("Muted"); placeholder.Margin = new Thickness(9, 0, 0, 0); placeholder.VerticalAlignment = VerticalAlignment.Center; placeholder.IsHitTestVisible = false; placeholder.Visibility = string.IsNullOrEmpty(query) ? Visibility.Visible : Visibility.Collapsed; searchBox.Children.Add(placeholder);
             search.TextChanged += (_, _) => { query = search.Text; placeholder.Visibility = string.IsNullOrEmpty(query) ? Visibility.Visible : Visibility.Collapsed; galleryPage = 0; UpdateGallery(); };
             toolbar.Children.Add(searchBox);
-            var sorting = new ComboBox { Width = 150, Margin = new Thickness(0, 0, 8, 0), IsEnabled = !busy,
+            var sorting = new ComboBox { Width = 150, Margin = new Thickness(0, 0, 8, 0), IsEnabled = !busy || backupResume != null,
                 ItemsSource = new[] { T("Sıralama: varsayılan", "Sort: default"), T("Tarih: yeni önce", "Date: newest"), T("Tarih: eski önce", "Date: oldest"), T("Boyut: büyük önce", "Size: largest"), T("Boyut: küçük önce", "Size: smallest") }, SelectedIndex = sort };
             AutomationProperties.SetName(sorting, T("Medya sıralaması", "Media sort order")); AutomationProperties.SetAutomationId(sorting, "SortFiles");
             sorting.ToolTip = T("Çekim tarihi yoksa sıralamada dosya değişiklik tarihi kullanılır; klasörleme için kullanılmaz.", "When capture date is unavailable, sorting uses the file modification date; folder organization does not.");
             sorting.SelectionChanged += (_, _) => { sort = Math.Max(0, sorting.SelectedIndex); galleryPage = 0; UpdateGallery(); }; toolbar.Children.Add(sorting);
-            toolbar.Children.Add(MakeButton(listView ? T("Galeri", "Gallery") : T("Liste", "List"), "ToggleView", () => { listView = !listView; galleryPage = 0; Render(); return Task.CompletedTask; }));
+            var toggleView = MakeButton(listView ? T("Galeri", "Gallery") : T("Liste", "List"), "ToggleView", () => { listView = !listView; galleryPage = 0; Render(); return Task.CompletedTask; }); toggleView.IsEnabled = !busy || backupResume != null; toolbar.Children.Add(toggleView);
             body.Children.Add(toolbar);
             var actions = new WrapPanel { Margin = new Thickness(0, 0, 0, 10) };
             countText = Label("", 12); countText.Foreground = Brush("Muted"); countText.Margin = new Thickness(0, 8, 16, 0); actions.Children.Add(countText);
-            actions.Children.Add(MakeButton(T("Görünenleri seç", "Select visible"), "SelectVisible", () => { foreach (var item in Visible()) selectedItems.Add(item); UpdateGallery(); return Task.CompletedTask; }));
-            actions.Children.Add(MakeButton(T("Seçimi temizle", "Clear selection"), "ClearSelection", () => { selectedItems.Clear(); UpdateGallery(); return Task.CompletedTask; }));
+            var selectVisible = MakeButton(T("Görünenleri seç", "Select visible"), "SelectVisible", () => { foreach (var item in Visible()) selectedItems.Add(item); UpdateGallery(); return Task.CompletedTask; }); selectVisible.IsEnabled = !busy || backupResume != null; actions.Children.Add(selectVisible);
+            var clearSelection = MakeButton(T("Seçimi temizle", "ClearSelection"), "ClearSelection", () => { selectedItems.Clear(); UpdateGallery(); return Task.CompletedTask; }); clearSelection.IsEnabled = !busy || backupResume != null; actions.Children.Add(clearSelection);
             body.Children.Add(actions);
             gallery = listView ? new StackPanel() : new WrapPanel();
             body.Children.Add(gallery);
             var paging = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-            paging.Children.Add(MakeButton(T("Önceki", "Previous"), "PreviousPage", () => { galleryPage = Math.Max(0, galleryPage - 1); UpdateGallery(); return Task.CompletedTask; }));
-            paging.Children.Add(MakeButton(T("Sonraki", "Next"), "NextPage", () => { if ((galleryPage + 1) * PageSize < Visible().Count) galleryPage++; UpdateGallery(); return Task.CompletedTask; }));
+            var previous = MakeButton(T("Önceki", "Previous"), "PreviousPage", () => { galleryPage = Math.Max(0, galleryPage - 1); UpdateGallery(); return Task.CompletedTask; }); previous.IsEnabled = !busy || backupResume != null; paging.Children.Add(previous);
+            var next = MakeButton(T("Sonraki", "Next"), "NextPage", () => { if ((galleryPage + 1) * PageSize < Visible().Count) galleryPage++; UpdateGallery(); return Task.CompletedTask; }); next.IsEnabled = !busy || backupResume != null; paging.Children.Add(next);
             body.Children.Add(paging);
         }
         else { gallery = null; countText = null; }
@@ -150,7 +152,7 @@ public partial class MainWindow
         {
             var pause = MakeButton(backupResume != null ? (manualCopy ? T("Kopyalamaya devam et", "Resume copying") : T("Yedeklemeye devam et", "Resume backup")) : (manualCopy ? T("Kopyalamayı durdur", "Pause copying") : T("Yedeklemeyi durdur", "Pause backup")), backupResume != null ? "ResumeBackup" : "PauseBackup", () =>
             {
-                if (backupResume != null) backupResume.TrySetResult(true);
+                if (backupResume != null) { foreach (var item in items.Where(selectedItems.Contains)) if (activeQueue != null && !activeQueue.Contains(item)) activeQueue.Add(item); selectedItems.Clear(); backupResume.TrySetResult(true); }
                 else { backupPauseRequested = true; state = "pausing"; UpdateStatus(); }
                 return Task.CompletedTask;
             });
@@ -193,7 +195,7 @@ public partial class MainWindow
             var name = new TextBlock { Text = item.Name, TextTrimming = TextTrimming.CharacterEllipsis, FontWeight = FontWeights.SemiBold, Foreground = Brush("Text") }; content.Children.Add(name);
             var size = Label(Size(item.Length), 12); size.Foreground = Brush("Muted"); content.Children.Add(size);
             var date = Label(item.Taken?.ToString("d") ?? T("Tarih bilinmiyor", "Date unknown"), 12); date.Foreground = Brush("Muted"); content.Children.Add(date);
-            var check = new CheckBox { Content = content, IsChecked = selectedItems.Contains(item), Width = listView ? 440 : 160, Margin = new Thickness(0, 0, 10, 10), Padding = new Thickness(8), Background = Brush("Surface"), Foreground = Brush("Text"), BorderBrush = Brush("Stroke"), IsEnabled = !busy };
+            var check = new CheckBox { Content = content, IsChecked = selectedItems.Contains(item), Width = listView ? 440 : 160, Margin = new Thickness(0, 0, 10, 10), Padding = new Thickness(8), Background = Brush("Surface"), Foreground = Brush("Text"), BorderBrush = Brush("Stroke"), IsEnabled = !busy || backupResume != null };
             check.Style = (Style)FindResource("Aktarim.MediaTile");
             AutomationProperties.SetName(check, item.Name);
             AutomationProperties.SetAutomationId(check, "File-" + index);
@@ -286,6 +288,7 @@ public partial class MainWindow
             "verifying" => T("Yerel kopya doğrulanıyor: ", "Verifying local copy: ") + activeName,
             "completed" => T("Yerel kopya doğrulandı: ", "Local copy verified: ") + activeName,
             "backupdone" => T("Yedekleme bitti: ", "Backup complete: ") + activeName,
+            "copydone" => T("Seçili aktarım bitti: ", "Selected transfer complete: ") + activeName,
             "checking" => T("Önceki yedek doğrulanıyor: ", "Checking previous backup: ") + activeName + (total > 0 ? " · " + Size(current) + " / " + Size(total) : ""),
             "resumecheck" => T("Kaydedilen bölüm kaynakla doğrulanıyor: ", "Checking saved portion against source: ") + activeName + " · " + Size(current) + " / " + Size(total),
             "historyerror" => T("Kopya doğrulandı ancak geçmiş kaydedilemedi; dosya sonraki yedeklemede tekrar kopyalanabilir: ", "Copy verified, but history could not be saved; the file may be copied again on the next backup: ") + activeName,
@@ -293,7 +296,7 @@ public partial class MainWindow
             "pausedmanual" => T("Bağlantı kesildi veya kaynak yarım okundu; tamamlananlar korundu, yarım dosyayı yeniden seçin: ", "Connection lost or source ended early; completed files are preserved, select the partial file again: ") + activeName + failureDetail,
             "pauseddisk" => T("Hedef disk dolu; kuyruk duraklatıldı. Tamamlanan dosyalar korundu: ", "Destination disk is full; queue paused. Completed files are preserved: ") + activeName,
             "pausing" => manualCopy ? T("Kopyalama durduruluyor…", "Pausing copying…") : T("Yedekleme durduruluyor…", "Pausing backup…"),
-            "pauseduser" => (manualCopy ? T("Kopyalama durduruldu: ", "Copying paused: ") : T("Yedekleme durduruldu: ", "Backup paused: ")) + activeName,
+            "pauseduser" => (manualCopy ? T("Kopyalama durduruldu: ", "Copying paused: ") : T("Yedekleme durduruldu: ", "Backup paused: ")) + activeName + T(" · Yeni dosyaları seçip devam edebilirsin.", " · Select more files, then resume."),
             "backupissues" => T("Bazı dosyalar kopyalanamadı; diğer dosyalar işlendi: ", "Some files could not be copied; other files were processed: ") + activeName,
             "failed" => T("Aktarım başarısız veya bağlantı kesildi. Yarım dosya tamamlanmadı; yeniden seçip baştan deneyin: ", "Transfer failed or connection was interrupted. The partial file was not completed; select it again to restart: ") + activeName,
             "error" => T("Aygıt işlemi başarısız. Kabloyu, kilidi ve güven onayını kontrol edin: ", "Device operation failed. Check cable, lock and trust approval: ") + activeName,
@@ -355,7 +358,7 @@ public partial class MainWindow
     {
         if (selected.Length == 0) return;
         string destination = settings.Destination;
-        var identities = selected.Select(item => item.SourceLocator ?? item.SourceKey ?? Guid.NewGuid().ToString("N")).ToArray();
+        var queue = selected.ToList(); activeQueue = queue;
         bool dateFolders = settings.UsbDateFolders;
         int copied = 0, skipped = 0, failures = 0; bool paused = false;
         backupDiagnostics.Clear(); failureDetail = "";
@@ -364,9 +367,10 @@ public partial class MainWindow
         await deviceGate.WaitAsync();
         try
         {
-            for (int index = 0; index < selected.Length; index++)
+            for (int index = 0; index < queue.Count; index++)
             {
-                var item = selected[index];
+                var item = queue[index];
+                string identity = item.SourceLocator ?? item.SourceKey ?? Guid.NewGuid().ToString("N");
                 string? published = null;
                 try
                 {
@@ -375,7 +379,6 @@ public partial class MainWindow
                     await BackupCheckpoint();
                     activeName = item.Name; current = 0; total = item.Length; state = "checking"; UpdateStatus();
                     string decision = "manual";
-                    if (onlyNew)
                     {
                         try { decision = await usbHistory.CheckAsync(item.SourceKey, item.Length, destination, item.SourceLocator, cancellationToken: token); }
                         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { decision = "history-unavailable"; }
@@ -393,7 +396,6 @@ public partial class MainWindow
                             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { decision = "history-unavailable"; }
                         }
                     }
-                    if (onlyNew)
                     {
                         string reason = decision switch { "verified" => T("doğrulandı, atlandı", "verified, skipped"), "identity-unknown" => T("kaynak kimliği veya değişim bilgisi belirsiz", "source identity or modification is uncertain"), "no-record" => T("bu kaynak sürümü ve hedef için geçmiş kaydı yok", "no history for this source version and destination"), "source-changed" => T("kaynak içeriği değişmiş", "source content changed"), "copy-missing-or-changed" => T("hedef kopya eksik, taşınmış veya değişmiş", "destination copy is missing, moved or changed"), _ => T("geçmiş kullanılamıyor", "history unavailable") };
                         backupDiagnostics.Add(item.Name + ": " + reason);
@@ -412,7 +414,7 @@ public partial class MainWindow
                             {
                                 using var source = item.Open();
                                 Action verify = () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); });
-                                return await UsbResumableCopy.CopyAsync(source, item.Length, target, item.Name, usbPartialDirectory, identities[index], token, progress, verify, value => hash = value,
+                                return await UsbResumableCopy.CopyAsync(source, item.Length, target, item.Name, usbPartialDirectory, identity, token, progress, verify, value => hash = value,
                                     checking => Dispatcher.Invoke(() => { state = checking ? "resumecheck" : "copying"; UpdateStatus(); }), BackupCheckpoint);
                             });
                             break;
@@ -445,14 +447,14 @@ public partial class MainWindow
                         else { var cause = e.GetBaseException(); failureDetail = $" · {cause.GetType().Name} (0x{cause.HResult:X8})"; backupDiagnostics.Add(item.Name + ": " + failureDetail); }
                         state = onlyNew ? "pausedconnection" : "pausedmanual"; paused = true; break;
                     }
-                    backupDiagnostics.Add(item.Name + ": " + T("dosya işlenemedi", "file could not be processed") + " (" + e.GetType().Name + ")");
+                    var error = e.GetBaseException();
+                    backupDiagnostics.Add(item.Name + ": " + T("dosya işlenemedi", "file could not be processed") + $" ({error.GetType().Name}, 0x{error.HResult:X8}: {error.Message})");
                     state = "failed";
                 }
                 UpdateStatus();
             }
-            if (!paused && onlyNew) { state = failures == 0 ? "backupdone" : "backupissues"; activeName = $"{copied:N0} " + T("kopyalandı", "copied") + $", {skipped:N0} " + T("atlandı", "skipped") + (failures > 0 ? $", {failures:N0} " + T("hata", "failed") : ""); }
-            else if (!paused && failures > 0) { state = "backupissues"; activeName = $"{failures:N0} " + T("hata", "failed"); }
+            if (!paused) { state = failures == 0 ? (onlyNew ? "backupdone" : "copydone") : "backupissues"; activeName = $"{copied:N0} " + T("kopyalandı", "copied") + $", {skipped:N0} " + T("atlandı", "skipped") + (failures > 0 ? $", {failures:N0} " + T("hata", "failed") : ""); }
         }
-        finally { deviceGate.Release(); backupCancellation?.Dispose(); backupCancellation = null; backupResume = null; backupPauseRequested = false; busy = false; await RefreshHistory(); Render(); }
+        finally { deviceGate.Release(); backupCancellation?.Dispose(); backupCancellation = null; backupResume = null; activeQueue = null; backupPauseRequested = false; busy = false; await RefreshHistory(); Render(); }
     }
 }
