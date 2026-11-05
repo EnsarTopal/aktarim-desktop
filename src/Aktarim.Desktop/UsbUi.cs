@@ -16,7 +16,7 @@ public partial class MainWindow
     private IUsbSource? selectedSource;
     private IReadOnlyList<UsbItem> items = [];
     private readonly HashSet<UsbItem> selectedItems = [];
-    private readonly List<(bool Success, string Path)> jobs = [];
+    private readonly List<(bool Success, string Path, bool HistoryError)> jobs = [];
     private bool busy, listView;
     private string state = "", query = "", activeName = "";
     private int filter, galleryPage, sort;
@@ -57,6 +57,7 @@ public partial class MainWindow
         Add(UsbHost, heading, 0);
 
         var body = new StackPanel { Margin = new Thickness(24, 0, 24, 16) };
+        body.Children.Add(HistoryWarning());
         var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         previewScroll = scroll;
         scroll.ScrollChanged += (_, _) => SchedulePreviews();
@@ -296,7 +297,10 @@ public partial class MainWindow
                 try
                 {
                     activeName = item.Name; state = "checking"; UpdateStatus();
-                    if (onlyNew && await usbHistory.IsBackedUpAsync(item.SourceKey, item.Length, destination)) { skipped++; continue; }
+                    bool backedUp = false;
+                    if (onlyNew) try { backedUp = await usbHistory.IsBackedUpAsync(item.SourceKey, item.Length, destination); }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                    if (backedUp) { skipped++; continue; }
                     current = 0; total = item.Length; state = "copying"; UpdateStatus();
                     var progress = new Progress<long>(value => { current = value; UpdateStatus(); });
                     string target = dateFolders && item.Taken is { } date ? Path.Combine(destination, date.ToString("yyyy", System.Globalization.CultureInfo.InvariantCulture), date.ToString("MM", System.Globalization.CultureInfo.InvariantCulture), date.ToString("dd", System.Globalization.CultureInfo.InvariantCulture)) : destination;
@@ -310,9 +314,9 @@ public partial class MainWindow
                     published = path;
                     await usbHistory.AddAsync(item.SourceKey, item.Length, destination, path, hash ?? throw new IOException("Missing verified hash."));
                     copied++;
-                    state = "completed"; activeName = item.Name; jobs.Add((true, path));
+                    state = "completed"; activeName = item.Name; jobs.Add((true, path, false));
                 }
-                catch (Exception) { state = published == null ? "failed" : "historyerror"; activeName = item.Name; jobs.Add((false, published ?? item.Name)); failed = true; break; }
+                catch (Exception) { state = published == null ? "failed" : "historyerror"; activeName = item.Name; jobs.Add((published != null, published ?? item.Name, published != null)); failed = true; break; }
                 UpdateStatus();
             }
             if (onlyNew && !failed) { state = "backupdone"; activeName = $"{copied:N0} " + T("kopyalandı", "copied") + $", {skipped:N0} " + T("atlandı", "skipped"); }

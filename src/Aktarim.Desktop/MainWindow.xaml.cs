@@ -11,17 +11,40 @@ namespace Aktarim.Desktop;
 
 public partial class MainWindow : Window
 {
-    private readonly string settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim", "settings.json");
+    private readonly string settingsFile;
     private Settings settings;
-    private readonly UsbHistory usbHistory = new();
+    private readonly UsbHistory usbHistory;
     private IReadOnlyList<UsbHistoryEntry> historyEntries = [];
+    private bool historyCorrupt, historyUnavailable, confirmHistoryRecovery;
+    private string? historyRecoveryMessage;
     private int page;
     private string T(string tr, string en) => settings.Language == "tr" ? tr : en;
-    public MainWindow() { InitializeComponent(); settings = Load(); var args = Environment.GetCommandLineArgs(); if (args.Length == 4 && args[1] == "--fake-usb") { fakeRoot = args[2]; settings.Destination = args[3]; } if (SystemParameters.HighContrast) ApplyHighContrast(); SizeChanged += (_, _) => SideColumn.Width = new GridLength(ActualWidth < 1050 ? 160 : 204); Closed += async (_, _) => { if (lan != null) await lan.DisposeAsync(); StopPreviews(); await deviceGate.WaitAsync(); try { foreach (var source in sources) source.Dispose(); } finally { deviceGate.Release(); } }; Render(); _ = RefreshHistory(); }
+    public MainWindow() { InitializeComponent(); var args = Environment.GetCommandLineArgs(); string profile = args.Length == 5 && args[1] == "--fake-usb" ? args[4] : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aktarim"); settingsFile = Path.Combine(profile, "settings.json"); usbHistory = new UsbHistory(Path.Combine(profile, "UsbHistory")); settings = Load(); if ((args.Length == 4 || args.Length == 5) && args[1] == "--fake-usb") { fakeRoot = args[2]; settings.Destination = args[3]; } if (SystemParameters.HighContrast) ApplyHighContrast(); SizeChanged += (_, _) => SideColumn.Width = new GridLength(ActualWidth < 1050 ? 160 : 204); Closed += async (_, _) => { if (lan != null) await lan.DisposeAsync(); StopPreviews(); await deviceGate.WaitAsync(); try { foreach (var source in sources) source.Dispose(); } finally { deviceGate.Release(); } }; Render(); _ = RefreshHistory(); }
     private async Task RefreshHistory()
     {
-        try { historyEntries = await usbHistory.EntriesAsync(); if (page == 3) Render(); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { MessageBox.Show(T("Geçmiş okunamadı: ", "Could not read history: ") + e.Message, "Aktarim"); }
+        try { historyEntries = await usbHistory.EntriesAsync(); historyCorrupt = historyUnavailable = false; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { historyEntries = []; historyCorrupt = e is UsbHistoryCorruptException; historyUnavailable = true; }
+        if (!busy && (page == 1 || page == 3)) Render();
+    }
+    private UIElement HistoryWarning()
+    {
+        var panel = new StackPanel();
+        if (historyUnavailable)
+        {
+            panel.Children.Add(Label(historyCorrupt ? T("Yedekleme geçmişi bozuk. Geçmişe göre dosya atlanmaz. Bozuk dosyayı koruyarak boş geçmiş başlatabilirsiniz.", "Backup history is corrupted. Files will not be skipped based on history. You can preserve the damaged file and start an empty history.") : T("Yedekleme geçmişine erişilemiyor. Geçmişe göre dosya atlanmaz.", "Backup history is unavailable. Files will not be skipped based on history.")));
+            if (historyCorrupt)
+            {
+                if (!confirmHistoryRecovery) panel.Children.Add(MakeButton(T("Geçmişi kurtar", "Recover history"), "RecoverHistory", () => { confirmHistoryRecovery = true; Render(); return Task.CompletedTask; }));
+                else
+                {
+                    panel.Children.Add(Label(T("Bozuk dosya korunacak; boş geçmiş başlatılacak. Onaylıyor musunuz?", "The damaged file will be preserved and an empty history started. Confirm?")));
+                    panel.Children.Add(MakeButton(T("Onayla: boş geçmiş başlat", "Confirm: start empty history"), "ConfirmHistoryRecovery", async () => { try { var archive = await usbHistory.RecoverCorruptAsync(); historyRecoveryMessage = archive == null ? T("Geçmiş zaten düzeltilmiş.", "History was already repaired.") : T("Bozuk geçmiş korundu: ", "Damaged history preserved: ") + archive; confirmHistoryRecovery = false; await RefreshHistory(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { historyRecoveryMessage = T("Kurtarma başarısız: ", "Recovery failed: ") + e.Message; Render(); } }));
+                    panel.Children.Add(MakeButton(T("Vazgeç", "Cancel"), "CancelHistoryRecovery", () => { confirmHistoryRecovery = false; Render(); return Task.CompletedTask; }));
+                }
+            }
+        }
+        if (historyRecoveryMessage != null) panel.Children.Add(Label(historyRecoveryMessage));
+        return panel;
     }
     private void ApplyHighContrast()
     {
@@ -67,7 +90,7 @@ public partial class MainWindow : Window
                 Paragraph(T("2. iPhone ve bilgisayarı aynı ağa bağla. iPhone’da Dosyalar → Göz At → … → Sunucuya Bağlan yolunu aç ve smb://PC-IP adresini gir.", "2. Connect the iPhone and computer to the same network. On iPhone open Files → Browse → … → Connect to Server and enter smb://PC-IP."));
                 Paragraph(T("3. Windows kullanıcı bilgilerinle giriş yap, paylaşılan klasörü aç ve dosyayı kopyala. Dosyalar uygulamasında tamamlandığını, Windows’ta dosya boyutunu ve oynatmayı kontrol et.", "3. Sign in with your Windows credentials, open the shared folder and copy the file. Check completion in Files and check file size and playback on Windows."));
                 Paragraph(T("Uygulama paylaşım veya güvenlik duvarı ayarlarını değiştirmez. SMB aktarımı otomatik doğrulanmaz veya devam ettirilmez.", "The app does not change sharing or firewall settings. SMB transfers are not automatically verified or resumed.")); break;
-            case 3: Heading(T("Aktarımlar", "Transfers")); foreach (var job in jobs.Where(x => !x.Success)) Paragraph(T("Başarısız: ", "Failed: ") + job.Path); foreach (var entry in historyEntries.Reverse()) Paragraph(T("Yerel kopya doğrulandı: ", "Local copy verified: ") + entry.Path); if (jobs.Count == 0 && historyEntries.Count == 0) Paragraph(T("Henüz aktarım yok.", "No transfers yet.")); break;
+            case 3: Heading(T("Aktarımlar", "Transfers")); ContentPanel.Children.Add(HistoryWarning()); foreach (var job in jobs.Where(x => !x.Success || x.HistoryError)) Paragraph((job.HistoryError ? T("Kopya doğrulandı, geçmiş kaydedilemedi: ", "Copy verified, history could not be saved: ") : T("Başarısız: ", "Failed: ")) + job.Path); foreach (var entry in historyEntries.Reverse()) Paragraph(T("Yerel kopya doğrulandı: ", "Local copy verified: ") + entry.Path); if (jobs.Count == 0 && historyEntries.Count == 0) Paragraph(T("Henüz aktarım yok.", "No transfers yet.")); break;
             case 4:
                 Heading(T("Ayarlar", "Settings")); Paragraph(T("Varsayılan hedef: ", "Default destination: ") + settings.Destination);
                 Action(T("Klasör seç", "Choose folder"), ChooseFolder);

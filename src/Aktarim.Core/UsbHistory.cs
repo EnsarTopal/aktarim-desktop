@@ -4,6 +4,10 @@ using System.Text.Json;
 namespace Aktarim.Core;
 
 public sealed record UsbHistoryEntry(string? SourceKey, long Length, string Destination, string Path, string Sha256, DateTime CompletedUtc);
+public sealed class UsbHistoryCorruptException : IOException
+{
+    public UsbHistoryCorruptException(Exception? inner = null) : base("Invalid USB history.", inner) { }
+}
 
 public sealed class UsbHistory
 {
@@ -33,10 +37,37 @@ public sealed class UsbHistory
     {
         var info = new FileInfo(file);
         if (!info.Exists) { cached = []; cachedWrite = default; cachedLength = 0; return cached; }
-        if (cached != null && cachedWrite == info.LastWriteTimeUtc && cachedLength == info.Length) return cached;
-        cached = JsonSerializer.Deserialize<List<UsbHistoryEntry>>(await File.ReadAllTextAsync(file)) ?? throw new IOException("Invalid USB history.");
+        cached = null;
+        try
+        {
+            var entries = JsonSerializer.Deserialize<List<UsbHistoryEntry>>(await File.ReadAllTextAsync(file));
+            if (entries == null || entries.Any(x => x == null || x.Length < 0 || string.IsNullOrWhiteSpace(x.Destination) || string.IsNullOrWhiteSpace(x.Path) || x.Sha256 == null || x.Sha256.Length != 64 || !x.Sha256.All(Uri.IsHexDigit))) throw new UsbHistoryCorruptException();
+            cached = entries;
+        }
+        catch (JsonException e) { cached = null; throw new UsbHistoryCorruptException(e); }
         cachedWrite = info.LastWriteTimeUtc; cachedLength = info.Length;
         return cached;
+    }
+
+    public async Task<string?> RecoverCorruptAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            using var guard = SafeDirectories.Open(directory, create: true, privateFrom: directory);
+            using var processLock = await LockAsync();
+            cached = null;
+            try { await ReadAsync(); return null; }
+            catch (UsbHistoryCorruptException) { }
+            string archive = Path.Combine(directory, "history.corrupt-" + Guid.NewGuid().ToString("N") + ".json");
+            File.Move(file, archive, false);
+            await using var output = new FileStream(file, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough);
+            await JsonSerializer.SerializeAsync(output, Array.Empty<UsbHistoryEntry>());
+            await output.FlushAsync(); output.Flush(true);
+            cached = null;
+            return archive;
+        }
+        finally { gate.Release(); }
     }
 
     public async Task<IReadOnlyList<UsbHistoryEntry>> EntriesAsync()

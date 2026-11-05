@@ -5,14 +5,17 @@ Add-Type -AssemblyName UIAutomationTypes
 if (!$Exe) { $Exe = Join-Path (Split-Path -Parent $PSScriptRoot) 'src/Aktarim.Desktop/bin/Release/net10.0-windows/Aktarim.exe' }
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('aktarim-backup-ui-' + [guid]::NewGuid().ToString('N'))
 $source = Join-Path $tempRoot 'source'; $target = Join-Path $tempRoot 'target'
-New-Item -ItemType Directory -Path (Join-Path $source 'a'), (Join-Path $source 'b'), $target -Force | Out-Null
+$profile = Join-Path $tempRoot 'profile'; $historyDir = Join-Path $profile 'UsbHistory'
+New-Item -ItemType Directory -Path (Join-Path $source 'a'), (Join-Path $source 'b'), $target, $historyDir -Force | Out-Null
+$historyFile = Join-Path $historyDir 'history.json'; $damaged = '{ invalid history'
+[IO.File]::WriteAllText($historyFile, $damaged)
 [IO.File]::WriteAllText((Join-Path $source 'a/same.jpg'), 'first fake photo')
 [IO.File]::WriteAllText((Join-Path $source 'b/same.jpg'), 'other fake photo with more bytes')
 [IO.File]::SetCreationTime((Join-Path $source 'a/same.jpg'), [DateTime]::new(2020, 1, 2))
 [IO.File]::SetCreationTime((Join-Path $source 'b/same.jpg'), [DateTime]::new(2022, 1, 2))
 $process = $null
 try {
-    $process = Start-Process -WindowStyle Hidden -FilePath $Exe -ArgumentList @('--fake-usb', "`"$source`"", "`"$target`"") -PassThru
+    $process = Start-Process -WindowStyle Hidden -FilePath $Exe -ArgumentList @('--fake-usb', "`"$source`"", "`"$target`"", "`"$profile`"") -PassThru
     function Find-Element([string]$id) {
         $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)
         for ($i = 0; $i -lt 150; $i++) {
@@ -39,6 +42,20 @@ try {
     $dateSetting = (Find-Element 'UsbDateFolders').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
     if ($dateSetting.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) { $dateSetting.Toggle() }
     Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'
+    Click 'BackupNew'; Wait-Backup '^Copy verified, but history could not be saved'
+    if ((Get-ChildItem $target -File).Count -ne 1 -or [IO.File]::ReadAllText($historyFile) -ne $damaged) { throw 'Corrupt history was trusted or changed, or verified copy was not kept.' }
+    Click 'Nav3'
+    $copyWarning = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, ('Copy verified, history could not be saved: ' + (Get-ChildItem $target -File)[0].FullName))
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+    if (!$window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $copyWarning)) { throw 'Verified copy and history failure were not separately reported.' }
+    Click 'RecoverHistory'; Click 'CancelHistoryRecovery'
+    if ([IO.File]::ReadAllText($historyFile) -ne $damaged) { throw 'Cancelled recovery changed history.' }
+    Click 'RecoverHistory'; Click 'ConfirmHistoryRecovery'
+    for ($i = 0; $i -lt 100; $i++) { if ((Test-Path $historyFile) -and [IO.File]::ReadAllText($historyFile) -eq '[]') { break }; Start-Sleep -Milliseconds 100 }
+    $archive = @(Get-ChildItem $historyDir -Filter 'history.corrupt-*.json')
+    if ($archive.Count -ne 1 -or [IO.File]::ReadAllText($archive[0].FullName) -ne $damaged -or [IO.File]::ReadAllText($historyFile) -ne '[]') { throw 'Approved recovery failed to preserve the damaged history.' }
+    Get-ChildItem $target -File | Remove-Item
+    Click 'Nav1'
     function Sort-By([string]$label) {
         $sort = Find-Element 'SortFiles'
         $sort.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
@@ -76,6 +93,6 @@ try {
     Write-Output 'PASS WPF fake USB backup, rescan skip, same names and deleted backup recreation'
 }
 finally {
-    if ($process -and !$process.HasExited) { Stop-Process -Id $process.Id -Force }
+    if ($process -and !$process.HasExited) { Stop-Process -Id $process.Id -Force; $process.WaitForExit() }
     Remove-Item -LiteralPath $tempRoot -Recurse -Force
 }

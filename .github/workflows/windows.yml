@@ -36,6 +36,9 @@ jobs:
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'aktarim-local'
           dotnet run --project tests/Aktarim.Lan.Tests/Aktarim.Lan.Tests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: WPF USB backup UI regression
+        shell: pwsh
+        run: ./tests/usb-backup-ui.ps1
       - name: Safari queue regression
         run: node tests/safari-queue.cjs
       - name: Publish single-file EXE and SHA-256

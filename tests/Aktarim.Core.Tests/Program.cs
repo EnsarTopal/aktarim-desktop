@@ -258,6 +258,23 @@ try
     Check(await Backup(null, backupBytes) && await Backup(null, backupBytes), "uncertain USB identity never skipped");
     Check(!await history.IsBackedUpAsync("device-object-one-version-one", backupBytes.Length, Path.Combine(root, "other-target")), "different destination not skipped");
     Check((await history.EntriesAsync()).Count == 7, "only successful USB copies recorded");
+    var brokenDir = Path.Combine(root, "broken-history");
+    Directory.CreateDirectory(brokenDir);
+    var brokenPath = Path.Combine(brokenDir, "history.json");
+    const string broken = "{ invalid history";
+    await File.WriteAllTextAsync(brokenPath, broken);
+    var brokenHistory = new UsbHistory(brokenDir);
+    bool rejected = false;
+    try { await brokenHistory.IsBackedUpAsync("source", 1, backupRoot); } catch (UsbHistoryCorruptException) { rejected = true; }
+    Check(rejected && await File.ReadAllTextAsync(brokenPath) == broken, "corrupt history is not trusted or changed without approval");
+    string? archive = await brokenHistory.RecoverCorruptAsync();
+    Check(archive != null && await File.ReadAllTextAsync(archive) == broken && (await brokenHistory.EntriesAsync()).Count == 0, "approved recovery preserves corrupt history and starts empty");
+    Check(!await brokenHistory.IsBackedUpAsync("source", 1, backupRoot), "recovered empty history never skips files");
+    Check(await brokenHistory.RecoverCorruptAsync() == null, "recovery does not overwrite valid history");
+    await File.WriteAllTextAsync(brokenPath, "[null]");
+    rejected = false;
+    try { await brokenHistory.EntriesAsync(); } catch (UsbHistoryCorruptException) { rejected = true; }
+    Check(rejected, "structurally corrupt history rejected");
     Console.WriteLine("All tests passed.");
 }
 finally
