@@ -287,7 +287,7 @@ public partial class MainWindow
             "checking" => T("Önceki yedek doğrulanıyor: ", "Checking previous backup: ") + activeName + (total > 0 ? " · " + Size(current) + " / " + Size(total) : ""),
             "resumecheck" => T("Kaydedilen bölüm kaynakla doğrulanıyor: ", "Checking saved portion against source: ") + activeName + " · " + Size(current) + " / " + Size(total),
             "historyerror" => T("Kopya doğrulandı ancak geçmiş kaydedilemedi; dosya sonraki yedeklemede tekrar kopyalanabilir: ", "Copy verified, but history could not be saved; the file may be copied again on the next backup: ") + activeName,
-            "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu; kuyruk duraklatıldı. Yeniden bağlayıp yedeklemeyi başlatın: ", "Connection lost or source ended early; queue paused. Reconnect and restart the backup: ") + activeName,
+            "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu. Yeniden bağlayın, aygıtları bulun, medyayı tarayın ve yedeklemeyi başlatın: ", "Connection lost or source ended early. Reconnect, find devices, scan media, then restart the backup: ") + activeName,
             "pausedmanual" => T("Bağlantı kesildi veya kaynak yarım okundu; tamamlananlar korundu, yarım dosyayı yeniden seçin: ", "Connection lost or source ended early; completed files are preserved, select the partial file again: ") + activeName,
             "pauseddisk" => T("Hedef disk dolu; kuyruk duraklatıldı. Tamamlanan dosyalar korundu: ", "Destination disk is full; queue paused. Completed files are preserved: ") + activeName,
             "pausing" => T("Yedekleme durduruluyor…", "Pausing backup…"),

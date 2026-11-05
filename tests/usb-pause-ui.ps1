@@ -66,7 +66,7 @@ try {
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
     if ($partial.Count -ne 1 -or $partial[0].Length -ne 10000 -or (Test-Path (Join-Path $target 'disconnect-d.mov'))) { throw 'Disconnected backup did not preserve its partial safely.' }
     [IO.File]::WriteAllText((Join-Path $source 'reconnected'), '')
-    Click 'ScanMedia'; Click 'BackupNew'
+    Click 'FindDevices'; Click 'ScanMedia'; Click 'BackupNew'
     Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 1' } else { '^Backup complete: 1 copied, 3 skipped' })
     if (@(Get-ChildItem $target -File).Count -ne 4 -or (Get-FileHash $disconnected).Hash -ne (Get-FileHash (Join-Path $target 'disconnect-d.mov')).Hash) { throw 'Disconnected backup did not resume correctly.' }
     Write-Output "PASS $Language WPF backup pause, retained partial, verified resume and completed-file preservation"
