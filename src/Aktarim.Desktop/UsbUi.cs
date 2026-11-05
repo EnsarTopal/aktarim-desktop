@@ -33,6 +33,9 @@ public partial class MainWindow
     private const int PreviewPhotoLimit = 12 * 1024 * 1024, ThumbnailLimit = 4 * 1024 * 1024;
     private readonly SemaphoreSlim deviceGate = new(1, 1);
     private CancellationTokenSource? previewCancellation;
+    private CancellationTokenSource? backupCancellation;
+    private TaskCompletionSource<bool>? backupResume;
+    private bool backupPauseRequested, backupClosing;
     private readonly Dictionary<UsbItem, BitmapSource?> previewCache = [];
     private readonly List<(UsbItem Item, Image Image, UIElement Fallback)> previewTiles = [];
     private ScrollViewer? previewScroll;
@@ -137,7 +140,21 @@ public partial class MainWindow
         AutomationProperties.SetName(path, T("Hedef klasör: ", "Destination: ") + settings.Destination); target.Children.Add(path); Add(bottom, target, 0);
         var bottomActions = new StackPanel { Orientation = Orientation.Horizontal };
         bottomActions.Children.Add(MakeButton(T("Hedefi değiştir", "Change destination"), "ChooseDestination", () => { ChooseFolder(); return Task.CompletedTask; }));
-        var backup = MakeButton(T("Yeni dosyaları yedekle", "Back up new files"), "BackupNew", BackupNew); backup.IsEnabled = !busy && items.Count > 0; bottomActions.Children.Add(backup);
+        if (backupCancellation == null)
+        {
+            var backup = MakeButton(T("Yeni dosyaları yedekle", "Back up new files"), "BackupNew", BackupNew); backup.IsEnabled = !busy && items.Count > 0; bottomActions.Children.Add(backup);
+        }
+        else
+        {
+            var pause = MakeButton(backupResume != null ? T("Yedeklemeye devam et", "Resume backup") : T("Yedeklemeyi durdur", "Pause backup"), backupResume != null ? "ResumeBackup" : "PauseBackup", () =>
+            {
+                if (backupResume != null) backupResume.TrySetResult(true);
+                else { backupPauseRequested = true; backupCancellation.Cancel(); state = "pausing"; UpdateStatus(); }
+                return Task.CompletedTask;
+            });
+            pause.IsEnabled = backupResume != null || !backupPauseRequested;
+            bottomActions.Children.Add(pause);
+        }
         copyButton = MakeButton(T("Seçileni kopyala", "Copy selected"), "CopySelected", CopySelected, true); bottomActions.Children.Add(copyButton); Add(bottom, bottomActions, 0, 1);
         var bottomBorder = new Border { Background = Brush("Sidebar"), BorderBrush = Brush("Stroke"), BorderThickness = new Thickness(0, 1, 0, 0), Child = bottom };
         Add(UsbHost, bottomBorder, 2);
@@ -270,6 +287,8 @@ public partial class MainWindow
             "historyerror" => T("Kopya doğrulandı ancak geçmiş kaydedilemedi; dosya sonraki yedeklemede tekrar kopyalanabilir: ", "Copy verified, but history could not be saved; the file may be copied again on the next backup: ") + activeName,
             "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu; kuyruk duraklatıldı. Tamamlananlar korundu; yarım dosya baştan kopyalanır: ", "Connection lost or source ended early; queue paused. Completed files are preserved; the partial file restarts: ") + activeName,
             "pauseddisk" => T("Hedef disk dolu; kuyruk duraklatıldı. Tamamlanan dosyalar korundu: ", "Destination disk is full; queue paused. Completed files are preserved: ") + activeName,
+            "pausing" => T("Yedekleme durduruluyor…", "Pausing backup…"),
+            "pauseduser" => T("Yedekleme durduruldu. Tamamlananlar korundu; yarım dosya devam ederken baştan kopyalanır: ", "Backup paused. Completed files are preserved; the partial file restarts when resumed: ") + activeName,
             "backupissues" => T("Bazı dosyalar kopyalanamadı; diğer dosyalar işlendi: ", "Some files could not be copied; other files were processed: ") + activeName,
             "failed" => T("Aktarım başarısız veya bağlantı kesildi. Yarım dosya tamamlanmadı; yeniden seçip baştan deneyin: ", "Transfer failed or connection was interrupted. The partial file was not completed; select it again to restart: ") + activeName,
             "error" => T("Aygıt işlemi başarısız. Kabloyu, kilidi ve güven onayını kontrol edin: ", "Device operation failed. Check cable, lock and trust approval: ") + activeName,
@@ -309,11 +328,11 @@ public partial class MainWindow
         await CopyItems(selected, false);
     }
     private Task BackupNew() => CopyItems(items.ToArray(), true);
-    private static async Task<string> HashSource(UsbItem item, IProgress<long> progress)
+    private static async Task<string> HashSource(UsbItem item, IProgress<long> progress, CancellationToken token)
     {
         using var input = item.Open(); using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[1024 * 1024]; long length = 0; int read;
-        while ((read = await input.ReadAsync(buffer)) != 0) { length = checked(length + read); if (length > item.Length) throw new InvalidDataException("Source exceeded expected length."); hash.AppendData(buffer, 0, read); progress.Report(length); }
+        while ((read = await input.ReadAsync(buffer, token)) != 0) { length = checked(length + read); if (length > item.Length) throw new InvalidDataException("Source exceeded expected length."); hash.AppendData(buffer, 0, read); progress.Report(length); }
         if (length != item.Length) throw new EndOfStreamException("Source ended before expected length.");
         return Convert.ToHexString(hash.GetHashAndReset());
     }
@@ -324,20 +343,24 @@ public partial class MainWindow
         bool dateFolders = settings.UsbDateFolders;
         int copied = 0, skipped = 0, failures = 0; bool paused = false;
         backupDiagnostics.Clear();
+        if (onlyNew) { backupClosing = false; backupPauseRequested = false; backupCancellation = new CancellationTokenSource(); }
         busy = true; Render();
         await deviceGate.WaitAsync();
         try
         {
-            foreach (var item in selected)
+            for (int index = 0; index < selected.Length; index++)
             {
+                var item = selected[index];
                 string? published = null;
                 try
                 {
+                    var token = backupCancellation?.Token ?? CancellationToken.None;
+                    token.ThrowIfCancellationRequested();
                     activeName = item.Name; current = 0; total = item.Length; state = "checking"; UpdateStatus();
                     string decision = "manual";
                     if (onlyNew)
                     {
-                        try { decision = await usbHistory.CheckAsync(item.SourceKey, item.Length, destination, item.SourceLocator); }
+                        try { decision = await usbHistory.CheckAsync(item.SourceKey, item.Length, destination, item.SourceLocator, cancellationToken: token); }
                         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { decision = "history-unavailable"; }
                         if (decision == "content-required")
                         {
@@ -345,11 +368,11 @@ public partial class MainWindow
                             string sourceHash;
                             for (int attempt = 0; ; attempt++)
                             {
-                                try { sourceHash = await Task.Run(() => HashSource(item, hashProgress)); break; }
-                                catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException)
-                                { await Task.Delay(300 * (attempt + 1)); }
+                                try { sourceHash = await Task.Run(() => HashSource(item, hashProgress, token), token); break; }
+                                catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
+                                { await Task.Delay(300 * (attempt + 1), token); }
                             }
-                            try { decision = await usbHistory.CheckAsync(null, item.Length, destination, item.SourceLocator, sourceHash); }
+                            try { decision = await usbHistory.CheckAsync(null, item.Length, destination, item.SourceLocator, sourceHash, token); }
                             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { decision = "history-unavailable"; }
                         }
                     }
@@ -371,18 +394,27 @@ public partial class MainWindow
                             path = await Task.Run(async () =>
                             {
                                 using var source = item.Open();
-                                return await UsbCopy.CopyAsync(source, item.Length, target, item.Name, progress: progress,
+                                return await UsbCopy.CopyAsync(source, item.Length, target, item.Name, cancellationToken: token, progress: progress,
                                     verifying: () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); }), verifiedHash: value => hash = value);
                             });
                             break;
                         }
-                        catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException)
-                        { await Task.Delay(300 * (attempt + 1)); state = "copying"; UpdateStatus(); }
+                        catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
+                        { await Task.Delay(300 * (attempt + 1), token); state = "copying"; UpdateStatus(); }
                     }
                     published = path;
                     await usbHistory.AddAsync(item.SourceKey, item.Length, destination, path, hash ?? throw new IOException("Missing verified hash."), item.SourceLocator);
                     copied++;
                     state = "completed"; activeName = item.Name; jobs.Add((true, path, false));
+                }
+                catch (OperationCanceledException) when (backupPauseRequested || backupClosing)
+                {
+                    if (backupClosing) return;
+                    backupResume = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    state = "pauseduser"; activeName = item.Name; Render();
+                    if (!await backupResume.Task || backupClosing) return;
+                    backupResume = null; backupCancellation!.Dispose(); backupCancellation = new CancellationTokenSource(); backupPauseRequested = false;
+                    index--; Render(); continue;
                 }
                 catch (Exception e)
                 {
@@ -398,6 +430,6 @@ public partial class MainWindow
             if (!paused && onlyNew) { state = failures == 0 ? "backupdone" : "backupissues"; activeName = $"{copied:N0} " + T("kopyalandı", "copied") + $", {skipped:N0} " + T("atlandı", "skipped") + (failures > 0 ? $", {failures:N0} " + T("hata", "failed") : ""); }
             else if (!paused && failures > 0) { state = "backupissues"; activeName = $"{failures:N0} " + T("hata", "failed"); }
         }
-        finally { deviceGate.Release(); busy = false; await RefreshHistory(); Render(); }
+        finally { deviceGate.Release(); backupCancellation?.Dispose(); backupCancellation = null; backupResume = null; backupPauseRequested = false; busy = false; await RefreshHistory(); Render(); }
     }
 }

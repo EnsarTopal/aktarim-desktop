@@ -63,9 +63,19 @@ internal sealed class FakeUsbSource(string root) : IUsbSource
             if (File.Exists(path + ".unreadable")) throw new UnauthorizedAccessException("Simulated unreadable source.");
             if (File.Exists(path + ".diskfull")) throw new IOException("Simulated full disk.", unchecked((int)0x80070070));
             if (File.Exists(path + ".transient")) { File.Delete(path + ".transient"); throw new IOException("Simulated transient error."); }
+            if (File.Exists(path + ".slow")) return new SlowFakeStream(path);
             return info.Name.StartsWith("disconnect-", StringComparison.OrdinalIgnoreCase) && !File.Exists(Path.Combine(root, "reconnected"))
             ? new MemoryStream(File.ReadAllBytes(path)[..(int)(info.Length / 2)]) : File.OpenRead(path); },
             () => File.OpenRead(path + ".thumb"), volatileId ? null : key, File.Exists(path + ".unknown-date") ? null : info.CreationTime, SourceLocator: volatileId ? key : null);
     }).ToArray();
     public void Dispose() { }
+}
+
+internal sealed class SlowFakeStream(string path) : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
+{
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        await Task.Delay(200, cancellationToken);
+        return await base.ReadAsync(buffer, cancellationToken);
+    }
 }

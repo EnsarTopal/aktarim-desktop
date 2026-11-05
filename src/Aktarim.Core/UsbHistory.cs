@@ -80,13 +80,13 @@ public sealed class UsbHistory
     public async Task<bool> IsBackedUpAsync(string? sourceKey, long length, string destination)
         => await CheckAsync(sourceKey, length, destination) == "verified";
 
-    public async Task<string> CheckAsync(string? sourceKey, long length, string destination, string? sourceLocator = null, string? sourceSha256 = null)
+    public async Task<string> CheckAsync(string? sourceKey, long length, string destination, string? sourceLocator = null, string? sourceSha256 = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(sourceKey)) sourceKey = null;
         if (string.IsNullOrWhiteSpace(sourceKey) && string.IsNullOrWhiteSpace(sourceLocator)) return "identity-unknown";
         destination = Path.GetFullPath(destination);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        await gate.WaitAsync();
+        await gate.WaitAsync(cancellationToken);
         try
         {
             using var guard = SafeDirectories.Open(directory, create: true, privateFrom: directory);
@@ -106,7 +106,7 @@ public sealed class UsbHistory
                     using var targetGuard = SafeDirectories.Open(Path.GetDirectoryName(path)!);
                     await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0 && input.Length == length &&
-                        Convert.ToHexString(await SHA256.HashDataAsync(input)).Equals(entry.Sha256, StringComparison.OrdinalIgnoreCase)) return "verified";
+                        Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken)).Equals(entry.Sha256, StringComparison.OrdinalIgnoreCase)) return "verified";
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
             }
