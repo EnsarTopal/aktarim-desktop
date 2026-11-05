@@ -63,6 +63,11 @@ try {
     [IO.File]::WriteAllBytes($disconnected, (1..20000 | ForEach-Object { [byte]($_ % 256) }))
     Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'disconnect-d\.mov'
     Wait-Status $(if ($Language -eq 'TR') { '^Ba' } else { '^Connection lost' })
+    $diagnostics = Find-Element 'BackupDiagnostics'
+    $diagnostics.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+    $detailCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    $details = $diagnostics.FindAll([System.Windows.Automation.TreeScope]::Descendants, $detailCondition) | ForEach-Object { $_.Current.Name }
+    if (($details -join ' ') -notmatch $(if ($Language -eq 'TR') { '10\D?000 / 20\D?000 bayt okundu' } else { '10\D?000 / 20\D?000 bytes read' })) { throw "Missing source byte counts: $details" }
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
     if ($partial.Count -ne 1 -or $partial[0].Length -ne 10000 -or (Test-Path (Join-Path $target 'disconnect-d.mov'))) { throw 'Disconnected backup did not preserve its partial safely.' }
     [IO.File]::WriteAllText((Join-Path $source 'reconnected'), '')

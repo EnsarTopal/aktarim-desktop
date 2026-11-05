@@ -33,7 +33,7 @@ public static class UsbCopy
                     await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
                     progress?.Report(count);
                 }
-                if (count != expectedLength) throw new EndOfStreamException("Source ended before expected length.");
+                if (count != expectedLength) throw new UsbSourceEndedException(count, expectedLength);
                 await output.FlushAsync(cancellationToken);
                 output.Flush(true);
                 byte[] expectedHash = sourceHash.GetHashAndReset();

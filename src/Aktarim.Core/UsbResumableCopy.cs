@@ -24,7 +24,7 @@ public static class UsbResumableCopy
             {
                 int requested = (int)Math.Min(buffer.Length, existing - position);
                 int read = await source.ReadAsync(buffer.AsMemory(0, requested), token);
-                if (read == 0) throw new EndOfStreamException("Source ended while validating partial copy.");
+                if (read == 0) throw new UsbSourceEndedException(position, length, true);
                 await saved.ReadExactlyAsync(previous.AsMemory(0, read), token);
                 if (!buffer.AsSpan(0, read).SequenceEqual(previous.AsSpan(0, read)))
                 {
@@ -43,7 +43,7 @@ public static class UsbResumableCopy
                 await saved.WriteAsync(buffer.AsMemory(0, count), token);
                 progress?.Report(position);
             }
-            if (position != length) throw new EndOfStreamException("Source ended before expected length.");
+            if (position != length) throw new UsbSourceEndedException(position, length);
             await saved.FlushAsync(token); saved.Flush(true);
             saved.Position = 0;
             byte[] sourceHash = hash.GetHashAndReset();

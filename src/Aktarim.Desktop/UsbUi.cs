@@ -336,7 +336,7 @@ public partial class MainWindow
         using var input = item.Open(); using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[1024 * 1024]; long length = 0; int read;
         while ((read = await input.ReadAsync(buffer, token)) != 0) { length = checked(length + read); if (length > item.Length) throw new InvalidDataException("Source exceeded expected length."); hash.AppendData(buffer, 0, read); progress.Report(length); }
-        if (length != item.Length) throw new EndOfStreamException("Source ended before expected length.");
+        if (length != item.Length) throw new UsbSourceEndedException(length, item.Length);
         return Convert.ToHexString(hash.GetHashAndReset());
     }
     private async Task CopyItems(UsbItem[] selected, bool onlyNew)
@@ -428,7 +428,13 @@ public partial class MainWindow
                     failures++; activeName = item.Name; jobs.Add((published != null, published ?? item.Name, published != null));
                     if (published != null) { state = "historyerror"; paused = true; break; }
                     if (TransferErrors.IsDiskFull(e)) { state = "pauseddisk"; paused = true; break; }
-                    if (TransferErrors.IsDisconnected(e)) { state = onlyNew ? "pausedconnection" : "pausedmanual"; paused = true; break; }
+                    if (TransferErrors.IsDisconnected(e))
+                    {
+                        if (e is UsbSourceEndedException ended)
+                            backupDiagnostics.Add(item.Name + ": " + (ended.ValidatingPartial ? T("kayıtlı bölüm doğrulanırken", "while checking the saved portion") : T("kaynak okunurken", "while reading the source")) + $" {ended.Actual:N0} / {ended.Expected:N0} " + T("bayt okundu", "bytes read"));
+                        else backupDiagnostics.Add(item.Name + ": " + e.GetType().Name + $" (0x{e.HResult:X8})");
+                        state = onlyNew ? "pausedconnection" : "pausedmanual"; paused = true; break;
+                    }
                     backupDiagnostics.Add(item.Name + ": " + T("dosya işlenemedi", "file could not be processed") + " (" + e.GetType().Name + ")");
                     state = "failed";
                 }

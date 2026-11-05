@@ -230,9 +230,12 @@ try
     Console.WriteLine($"USB first: {usbPath}; second: {usbSecond}; entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}");
     Check(usbPath != usbSecond && Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB existing file preserved");
     string usbParts = Path.Combine(root, "usb-parts"), usbResumeTarget = Path.Combine(root, "usb-resume");
-    await Throws<EndOfStreamException>(() => UsbResumableCopy.CopyAsync(new MemoryStream(first[..(first.Length / 2)]), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a"), "USB resumable interruption");
+    try { await UsbResumableCopy.CopyAsync(new MemoryStream(first[..(first.Length / 2)]), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a"); throw new Exception("Truncated source was accepted."); }
+    catch (UsbSourceEndedException e) { Check(e.Actual == first.Length / 2 && e.Expected == first.Length && !e.ValidatingPartial, "USB short source reports exact byte counts"); }
     var usbPartial = Directory.GetFiles(usbParts, "*.partial").Single();
     Check(new FileInfo(usbPartial).Length == first.Length / 2 && !File.Exists(Path.Combine(usbResumeTarget, "resume.mov")), "USB partial saved privately without publication");
+    try { await UsbResumableCopy.CopyAsync(new MemoryStream(first[..100]), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a"); throw new Exception("Truncated source during validation was accepted."); }
+    catch (UsbSourceEndedException e) { Check(e.Actual == 100 && e.Expected == first.Length && e.ValidatingPartial, "USB short source during saved-prefix validation is distinguished"); }
     bool checkedPrefix = false;
     var resumedUsb = await UsbResumableCopy.CopyAsync(new MemoryStream(first), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a", validatingPartial: checking => checkedPrefix |= checking);
     Check(checkedPrefix && Hash(await File.ReadAllBytesAsync(resumedUsb)) == Hash(first) && !File.Exists(usbPartial), "USB saved prefix checked and resumed copy verified");
