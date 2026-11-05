@@ -22,10 +22,29 @@ internal static class UsbSources
 
 internal sealed class WpdSource(MediaDevice device) : IUsbSource
 {
+    private bool reconnectRequired;
+    private int generation;
     public string Name => device.FriendlyName ?? "WPD";
+    private void Connect()
+    {
+        if (reconnectRequired)
+        {
+            device.Disconnect();
+            device.Connect(MediaDeviceAccess.GenericRead, MediaDeviceShare.Read, false);
+            generation++;
+            reconnectRequired = false;
+        }
+        else if (!device.IsConnected) device.Connect(MediaDeviceAccess.GenericRead, MediaDeviceShare.Read, false);
+    }
+    private void AbortRead()
+    {
+        reconnectRequired = true;
+        // Cancel before releasing the stream. The mandatory reopen prevents reuse even if cancellation fails.
+        try { if (device.IsConnected) device.Cancel(); } catch (Exception) { }
+    }
     public IReadOnlyList<UsbItem> Scan()
     {
-        if (!device.IsConnected) device.Connect(MediaDeviceAccess.GenericRead, MediaDeviceShare.Read, false);
+        Connect();
         var result = new List<UsbItem>();
         foreach (var drive in device.GetDrives() ?? [])
             foreach (var file in drive.RootDirectory?.EnumerateFiles("*", SearchOption.AllDirectories) ?? [])
@@ -41,12 +60,40 @@ internal sealed class WpdSource(MediaDevice device) : IUsbSource
                     }
                     catch (Exception) { }
                     try { if (item.DateAuthored is { Year: > 1970 } date) taken = date; } catch (Exception) { }
-                    result.Add(new(item.Name, checked((long)item.Length), () => item.OpenRead(), () => item.OpenThumbnail(), null, taken, modified, locator));
+                    string path = item.FullName;
+                    long length = checked((long)item.Length);
+                    int itemGeneration = generation;
+                    Stream Open(bool thumbnail)
+                    {
+                        try
+                        {
+                            Connect();
+                            if (itemGeneration != generation)
+                            {
+                                // WPD object IDs belong to a session; resolve the original path again after reopening.
+                                var fresh = device.GetFileInfo(path);
+                                if (fresh.Length != (ulong)length || fresh.LastWriteTime != modified)
+                                    throw new IOException("The USB source changed; scan the device again.");
+                                item = fresh; itemGeneration = generation;
+                            }
+                            return new WpdReadStream(thumbnail ? item.OpenThumbnail() : item.OpenRead(), thumbnail ? null : length, AbortRead);
+                        }
+                        catch (Exception e) when (e is not NotSupportedException and not UnauthorizedAccessException and not ArgumentException)
+                        {
+                            AbortRead();
+                            throw new WpdReadException(e.GetBaseException());
+                        }
+                    }
+                    result.Add(new(item.Name, length, () => Open(false), () => Open(true), null, taken, modified, locator));
                 }
         var duplicates = result.Where(x => x.SourceLocator != null).GroupBy(x => x.SourceLocator).Where(x => x.Count() > 1).Select(x => x.Key).ToHashSet();
         return result.Select(item => duplicates.Contains(item.SourceLocator) ? item with { SourceLocator = null } : item).ToArray();
     }
-    public void Dispose() => device.Dispose();
+    public void Dispose()
+    {
+        try { device.Disconnect(); }
+        finally { device.Dispose(); }
+    }
 }
 
 // Enabled only by explicit test command line arguments.

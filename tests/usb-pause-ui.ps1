@@ -8,7 +8,7 @@ $source = Join-Path $root 'source'; $target = Join-Path $root 'target'; $profile
 New-Item -ItemType Directory -Path $source, $target, $profile -Force | Out-Null
 [IO.File]::WriteAllText((Join-Path $source 'a.jpg'), 'completed first')
 $large = Join-Path $source 'b.mov'
-$stream = [IO.File]::Create($large); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
+$stream = [IO.File]::Create($large); try { $stream.SetLength(16777216) } finally { $stream.Dispose() }
 [IO.File]::WriteAllText(($large + '.slow'), '')
 [IO.File]::WriteAllText(($large + '.track'), '')
 if ($Manual) { [IO.File]::WriteAllText((Join-Path $source 'c.jpg'), 'added while paused') }
@@ -38,7 +38,7 @@ try {
     }
     Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'
     if ($Manual) { foreach ($id in @('File-0', 'File-1')) { (Find-Element $id).GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }; Click 'CopySelected' } else { Click 'BackupNew' }
-    Wait-Status 'b\.mov.*1 MB'
+    Wait-Status 'b\.mov.*\s(?:[1-9]|1[0-2])(?:[.,]\d)? MB /'
     Click 'PauseBackup'
     Wait-Status $(if ($Manual) { if ($Language -eq 'TR') { '^Kopyalama durduruldu' } else { '^Copying paused' } } elseif ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
     if (!(Test-Path (Join-Path $target 'a.jpg')) -or (Test-Path (Join-Path $target 'b.mov')) -or @(Get-ChildItem $target -Force -Filter '*.partial').Count -ne 0) { throw 'Pause did not preserve completed file or clean the partial file.' }
@@ -64,9 +64,9 @@ try {
         Write-Output "PASS $Language WPF pause selection, verified resume, and previously copied file skip"; return
     }
     $crashFile = Join-Path $source 'c.mov'
-    $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
+    $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(16777216) } finally { $stream.Dispose() }
     [IO.File]::WriteAllText(($crashFile + '.slow'), '')
-    Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'c\.mov.*1 MB'
+    Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'c\.mov.*\s(?:[1-9]|1[0-2])(?:[.,]\d)? MB /'
     Stop-Process -Id $process.Id -Force; $process.WaitForExit()
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
     if ($partial.Count -ne 1 -or $partial[0].Length -lt 1048576 -or (Test-Path (Join-Path $target 'c.mov'))) { throw 'Interrupted partial not retained safely.' }
