@@ -5,7 +5,7 @@ namespace Aktarim.Core;
 public static class TransferErrors
 {
     public static bool IsDiskFull(Exception exception) => HasCode(exception, 39, 112);
-    public static bool IsDisconnected(Exception exception) => exception is EndOfStreamException || exception.InnerException != null && IsDisconnected(exception.InnerException) || HasCode(exception, 6, 21, 31, 55, 64, 1167);
+    public static bool IsDisconnected(Exception exception) => exception is EndOfStreamException || exception.InnerException != null && IsDisconnected(exception.InnerException) || HasCode(exception, 6, 21, 30, 31, 55, 64, 1167);
 
     private static bool HasCode(Exception exception, params int[] codes)
     {

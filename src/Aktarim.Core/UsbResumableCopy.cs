@@ -20,6 +20,7 @@ public static class UsbResumableCopy
             if (existing > 0) validatingPartial?.Invoke(true);
             byte[] buffer = new byte[1024 * 1024], previous = new byte[buffer.Length];
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            bool changedPartial = false;
             while (position < existing)
             {
                 if (checkpoint != null) await checkpoint();
@@ -30,7 +31,9 @@ public static class UsbResumableCopy
                 if (!buffer.AsSpan(0, read).SequenceEqual(previous.AsSpan(0, read)))
                 {
                     saved.SetLength(0);
-                    throw new IOException("Source or partial copy changed; retry from the beginning.");
+                    changedPartial = true;
+                    position += read;
+                    break;
                 }
                 hash.AppendData(buffer, 0, read); position += read; progress?.Report(position);
             }
@@ -42,11 +45,16 @@ public static class UsbResumableCopy
                 count = await source.ReadAsync(buffer, token);
                 if (count == 0) break;
                 position = checked(position + count);
-                if (position > length) throw new InvalidDataException("Source exceeded expected length.");
-                hash.AppendData(buffer, 0, count);
-                await saved.WriteAsync(buffer.AsMemory(0, count), token);
+                if (position > length && !changedPartial) throw new InvalidDataException("Source exceeded expected length.");
+                if (!changedPartial)
+                {
+                    hash.AppendData(buffer, 0, count);
+                    await saved.WriteAsync(buffer.AsMemory(0, count), token);
+                }
                 progress?.Report(position);
             }
+            // Finish the resource before rejecting a stale prefix; releasing a partially read iPhone stream can corrupt the next read.
+            if (changedPartial) throw new IOException("Source or partial copy changed; retry from the beginning.");
             if (position != length) throw new UsbSourceEndedException(position, length);
             await saved.FlushAsync(token); saved.Flush(true);
             saved.Position = 0;

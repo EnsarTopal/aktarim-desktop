@@ -36,6 +36,8 @@ jobs:
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'aktarim-local'
           dotnet run --project tests/Aktarim.Lan.Tests/Aktarim.Lan.Tests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: WPD resource lifetime regression
+        run: dotnet run --project tests/Aktarim.Usb.Tests/Aktarim.Usb.Tests.csproj -c Release
       - name: WPF USB backup UI regression
         shell: pwsh
         run: ./tests/usb-backup-ui.ps1
@@ -44,8 +46,11 @@ jobs:
         run: |
           ./tests/usb-gallery-ui.ps1
           ./tests/usb-queue-ui.ps1
+          ./tests/usb-preview-cancellation-ui.ps1
           ./tests/usb-pause-ui.ps1 -Language EN
           ./tests/usb-pause-ui.ps1 -Language TR
+          ./tests/usb-pause-ui.ps1 -Language EN -Manual
+          ./tests/usb-pause-ui.ps1 -Language TR -Manual
           ./tests/usb-ui.ps1 -Language EN
           ./tests/usb-ui.ps1 -Language TR
       - name: Safari queue regression

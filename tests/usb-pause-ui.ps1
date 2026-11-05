@@ -1,4 +1,4 @@
-param([ValidateSet('TR','EN')][string]$Language = 'EN')
+param([ValidateSet('TR','EN')][string]$Language = 'EN', [switch]$Manual)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -8,9 +8,10 @@ $source = Join-Path $root 'source'; $target = Join-Path $root 'target'; $profile
 New-Item -ItemType Directory -Path $source, $target, $profile -Force | Out-Null
 [IO.File]::WriteAllText((Join-Path $source 'a.jpg'), 'completed first')
 $large = Join-Path $source 'b.mov'
-$stream = [IO.File]::Create($large); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
+$stream = [IO.File]::Create($large); try { $stream.SetLength(16777216) } finally { $stream.Dispose() }
 [IO.File]::WriteAllText(($large + '.slow'), '')
 [IO.File]::WriteAllText(($large + '.track'), '')
+if ($Manual) { [IO.File]::WriteAllText((Join-Path $source 'c.jpg'), 'added while paused') }
 $process = $null
 try {
     $process = Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--fake-usb', "`"$source`"", "`"$target`"", "`"$profile`"") -PassThru
@@ -35,24 +36,37 @@ try {
         }
         throw "Status did not match $pattern : $status"
     }
-    Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'; Click 'BackupNew'
-    Wait-Status 'b\.mov.*1 MB'
+    Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'
+    if ($Manual) { foreach ($id in @('File-0', 'File-1')) { (Find-Element $id).GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }; Click 'CopySelected' } else { Click 'BackupNew' }
+    Wait-Status 'b\.mov.*\s(?:[1-9]|1[0-2])(?:[.,]\d)? MB /'
     Click 'PauseBackup'
-    Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
+    Wait-Status $(if ($Manual) { if ($Language -eq 'TR') { '^Kopyalama durduruldu' } else { '^Copying paused' } } elseif ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
     if (!(Test-Path (Join-Path $target 'a.jpg')) -or (Test-Path (Join-Path $target 'b.mov')) -or @(Get-ChildItem $target -Force -Filter '*.partial').Count -ne 0) { throw 'Pause did not preserve completed file or clean the partial file.' }
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
     if ($partial.Count -ne 1 -or (Get-Content ($large + '.opened') -Raw) -ne '1') { throw 'Pause closed or reopened the source.' }
     $history = Get-Content -LiteralPath (Join-Path $profile 'UsbHistory/history.json') -Raw | ConvertFrom-Json
     if (@($history).Count -ne 1) { throw 'Incomplete file was recorded in history.' }
+    if ($Manual) { (Find-Element 'File-2').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle() }
     Click 'ResumeBackup'
-    Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 2' } else { '^Backup complete: 2 copied' })
-    if (@(Get-ChildItem $target -File).Count -ne 2 -or (Get-FileHash $large).Hash -ne (Get-FileHash (Join-Path $target 'b.mov')).Hash) { throw 'Resume produced duplicates or incorrect output.' }
+    Wait-Status $(if ($Manual) { if ($Language -eq 'TR') { '^Se' } else { '^Selected transfer complete: 3 copied' } } elseif ($Language -eq 'TR') { '^Yedekleme bitti: 2' } else { '^Backup complete: 2 copied' })
+    if (@(Get-ChildItem $target -File).Count -ne $(if ($Manual) { 3 } else { 2 }) -or (Get-FileHash $large).Hash -ne (Get-FileHash (Join-Path $target 'b.mov')).Hash) { throw 'Resume produced duplicates or incorrect output.' }
     if ((Get-Content ($large + '.opened') -Raw) -ne '1') { throw 'Resume reopened the source instead of continuing its stream.' }
     if (@(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial').Count -ne 0) { throw 'Published partial was not removed.' }
+    if ($Manual) {
+        if ((Get-FileHash (Join-Path $source 'c.jpg')).Hash -ne (Get-FileHash (Join-Path $target 'c.jpg')).Hash) { throw 'File selected during pause was not copied correctly.' }
+        (Find-Element 'File-0').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); Click 'CopySelected'
+        Wait-Status $(if ($Language -eq 'TR') { '^Se.+0 .+1 ' } else { '^Selected transfer complete: 0 copied, 1 skipped' })
+        if (@(Get-ChildItem $target -File).Count -ne 3) { throw 'Previously verified selected file was duplicated.' }
+        [IO.File]::WriteAllText((Join-Path $target 'a.jpg'), 'changed destination')
+        (Find-Element 'File-0').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); Click 'CopySelected'
+        Wait-Status $(if ($Language -eq 'TR') { '^Se.+1 .+0 ' } else { '^Selected transfer complete: 1 copied, 0 skipped' })
+        if ((Get-Content (Join-Path $target 'a.jpg') -Raw) -ne 'changed destination' -or (Get-FileHash (Join-Path $source 'a.jpg')).Hash -ne (Get-FileHash (Join-Path $target 'a (1).jpg')).Hash) { throw 'Changed backup was not safely recopied.' }
+        Write-Output "PASS $Language WPF pause selection, verified resume, and previously copied file skip"; return
+    }
     $crashFile = Join-Path $source 'c.mov'
-    $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
+    $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(16777216) } finally { $stream.Dispose() }
     [IO.File]::WriteAllText(($crashFile + '.slow'), '')
-    Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'c\.mov.*1 MB'
+    Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'c\.mov.*\s(?:[1-9]|1[0-2])(?:[.,]\d)? MB /'
     Stop-Process -Id $process.Id -Force; $process.WaitForExit()
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
     if ($partial.Count -ne 1 -or $partial[0].Length -lt 1048576 -or (Test-Path (Join-Path $target 'c.mov'))) { throw 'Interrupted partial not retained safely.' }
