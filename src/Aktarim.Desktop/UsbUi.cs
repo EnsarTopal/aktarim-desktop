@@ -15,6 +15,7 @@ namespace Aktarim.Desktop;
 public partial class MainWindow
 {
     private string? fakeRoot;
+    private string usbPartialDirectory = "";
     private List<IUsbSource> sources = [];
     private IUsbSource? selectedSource;
     private IReadOnlyList<UsbItem> items = [];
@@ -284,11 +285,13 @@ public partial class MainWindow
             "completed" => T("Yerel kopya doğrulandı: ", "Local copy verified: ") + activeName,
             "backupdone" => T("Yedekleme bitti: ", "Backup complete: ") + activeName,
             "checking" => T("Önceki yedek doğrulanıyor: ", "Checking previous backup: ") + activeName + (total > 0 ? " · " + Size(current) + " / " + Size(total) : ""),
+            "resumecheck" => T("Kaydedilen bölüm kaynakla doğrulanıyor: ", "Checking saved portion against source: ") + activeName + " · " + Size(current) + " / " + Size(total),
             "historyerror" => T("Kopya doğrulandı ancak geçmiş kaydedilemedi; dosya sonraki yedeklemede tekrar kopyalanabilir: ", "Copy verified, but history could not be saved; the file may be copied again on the next backup: ") + activeName,
-            "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu; kuyruk duraklatıldı. Tamamlananlar korundu; yarım dosya baştan kopyalanır: ", "Connection lost or source ended early; queue paused. Completed files are preserved; the partial file restarts: ") + activeName,
+            "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu; kuyruk duraklatıldı. Yeniden bağlayıp yedeklemeyi başlatın: ", "Connection lost or source ended early; queue paused. Reconnect and restart the backup: ") + activeName,
+            "pausedmanual" => T("Bağlantı kesildi veya kaynak yarım okundu; tamamlananlar korundu, yarım dosyayı yeniden seçin: ", "Connection lost or source ended early; completed files are preserved, select the partial file again: ") + activeName,
             "pauseddisk" => T("Hedef disk dolu; kuyruk duraklatıldı. Tamamlanan dosyalar korundu: ", "Destination disk is full; queue paused. Completed files are preserved: ") + activeName,
             "pausing" => T("Yedekleme durduruluyor…", "Pausing backup…"),
-            "pauseduser" => T("Yedekleme durduruldu. Tamamlananlar korundu; yarım dosya devam ederken baştan kopyalanır: ", "Backup paused. Completed files are preserved; the partial file restarts when resumed: ") + activeName,
+            "pauseduser" => T("Yedekleme durduruldu. Devam ederken kayıtlı bölüm kaynakla doğrulanır: ", "Backup paused. The saved portion is checked against the source when resumed: ") + activeName,
             "backupissues" => T("Bazı dosyalar kopyalanamadı; diğer dosyalar işlendi: ", "Some files could not be copied; other files were processed: ") + activeName,
             "failed" => T("Aktarım başarısız veya bağlantı kesildi. Yarım dosya tamamlanmadı; yeniden seçip baştan deneyin: ", "Transfer failed or connection was interrupted. The partial file was not completed; select it again to restart: ") + activeName,
             "error" => T("Aygıt işlemi başarısız. Kabloyu, kilidi ve güven onayını kontrol edin: ", "Device operation failed. Check cable, lock and trust approval: ") + activeName,
@@ -340,6 +343,7 @@ public partial class MainWindow
     {
         if (selected.Length == 0) return;
         string destination = settings.Destination;
+        var identities = selected.Select(item => item.SourceLocator ?? item.SourceKey ?? Guid.NewGuid().ToString("N")).ToArray();
         bool dateFolders = settings.UsbDateFolders;
         int copied = 0, skipped = 0, failures = 0; bool paused = false;
         backupDiagnostics.Clear();
@@ -394,8 +398,11 @@ public partial class MainWindow
                             path = await Task.Run(async () =>
                             {
                                 using var source = item.Open();
-                                return await UsbCopy.CopyAsync(source, item.Length, target, item.Name, cancellationToken: token, progress: progress,
-                                    verifying: () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); }), verifiedHash: value => hash = value);
+                                Action verify = () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); });
+                                return onlyNew
+                                    ? await UsbResumableCopy.CopyAsync(source, item.Length, target, item.Name, usbPartialDirectory, identities[index], token, progress, verify, value => hash = value,
+                                        checking => Dispatcher.Invoke(() => { state = checking ? "resumecheck" : "copying"; UpdateStatus(); }))
+                                    : await UsbCopy.CopyAsync(source, item.Length, target, item.Name, cancellationToken: token, progress: progress, verifying: verify, verifiedHash: value => hash = value);
                             });
                             break;
                         }
@@ -421,7 +428,7 @@ public partial class MainWindow
                     failures++; activeName = item.Name; jobs.Add((published != null, published ?? item.Name, published != null));
                     if (published != null) { state = "historyerror"; paused = true; break; }
                     if (TransferErrors.IsDiskFull(e)) { state = "pauseddisk"; paused = true; break; }
-                    if (TransferErrors.IsDisconnected(e)) { state = "pausedconnection"; paused = true; break; }
+                    if (TransferErrors.IsDisconnected(e)) { state = onlyNew ? "pausedconnection" : "pausedmanual"; paused = true; break; }
                     backupDiagnostics.Add(item.Name + ": " + T("dosya işlenemedi", "file could not be processed") + " (" + e.GetType().Name + ")");
                     state = "failed";
                 }

@@ -76,6 +76,20 @@ internal sealed class SafeDirectories : IDisposable
         return new FileStream(handle, FileAccess.ReadWrite, 65536, isAsync: false);
     }
 
+    public static FileStream OpenPartial(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new IOException("Partial file links are not allowed.");
+            return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 65536, FileOptions.WriteThrough);
+        }
+        var handle = CreateFile(path, 0xC0000000, 0, IntPtr.Zero, 4, 0x80200080, IntPtr.Zero);
+        if (handle.IsInvalid) { int error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new IOException("Cannot safely open partial file.", new Win32Exception(error)); }
+        if (!GetFileInformationByHandleEx(handle, 9, out var info, (uint)Marshal.SizeOf<AttributeTag>()) || (info.Attributes & ((uint)FileAttributes.ReparsePoint | (uint)FileAttributes.Directory)) != 0)
+        { handle.Dispose(); throw new IOException("Partial file links are not allowed."); }
+        return new FileStream(handle, FileAccess.ReadWrite, 65536, isAsync: false);
+    }
+
     public static void Publish(FileStream file, string staged, string target)
     {
         if (!OperatingSystem.IsWindows()) { File.Move(staged, target, false); return; }

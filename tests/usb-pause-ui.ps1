@@ -35,16 +35,41 @@ try {
         throw "Status did not match $pattern : $status"
     }
     Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'; Click 'BackupNew'
-    Wait-Status 'b\.mov'
+    Wait-Status 'b\.mov.*1 MB'
     Click 'PauseBackup'
     Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
     if (!(Test-Path (Join-Path $target 'a.jpg')) -or (Test-Path (Join-Path $target 'b.mov')) -or @(Get-ChildItem $target -Force -Filter '*.partial').Count -ne 0) { throw 'Pause did not preserve completed file or clean the partial file.' }
+    $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
+    if ($partial.Count -ne 1 -or $partial[0].Length -lt 1048576 -or $partial[0].Length -ge 4194304) { throw 'Paused bytes were not retained for resume.' }
     $history = Get-Content -LiteralPath (Join-Path $profile 'UsbHistory/history.json') -Raw | ConvertFrom-Json
     if (@($history).Count -ne 1) { throw 'Incomplete file was recorded in history.' }
     Click 'ResumeBackup'
     Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 2' } else { '^Backup complete: 2 copied' })
     if (@(Get-ChildItem $target -File).Count -ne 2 -or (Get-FileHash $large).Hash -ne (Get-FileHash (Join-Path $target 'b.mov')).Hash) { throw 'Resume produced duplicates or incorrect output.' }
-    Write-Output "PASS $Language WPF backup pause, partial cleanup, verified resume and completed-file preservation"
+    if (@(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial').Count -ne 0) { throw 'Published partial was not removed.' }
+    $crashFile = Join-Path $source 'c.mov'
+    $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
+    [IO.File]::WriteAllText(($crashFile + '.slow'), '')
+    Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'c\.mov.*1 MB'
+    Stop-Process -Id $process.Id -Force; $process.WaitForExit()
+    $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
+    if ($partial.Count -ne 1 -or $partial[0].Length -lt 1048576 -or (Test-Path (Join-Path $target 'c.mov'))) { throw 'Interrupted partial not retained safely.' }
+    $process = Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--fake-usb', "`"$source`"", "`"$target`"", "`"$profile`"") -PassThru
+    Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'; Click 'BackupNew'
+    Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 1' } else { '^Backup complete: 1 copied, 2 skipped' })
+    if (@(Get-ChildItem $target -File).Count -ne 3 -or (Get-FileHash $crashFile).Hash -ne (Get-FileHash (Join-Path $target 'c.mov')).Hash) { throw 'Restart after interruption failed or duplicated completed files.' }
+    if (@(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial').Count -ne 0) { throw 'Restarted partial was not removed.' }
+    $disconnected = Join-Path $source 'disconnect-d.mov'
+    [IO.File]::WriteAllBytes($disconnected, (1..20000 | ForEach-Object { [byte]($_ % 256) }))
+    Click 'ScanMedia'; Click 'BackupNew'; Wait-Status 'disconnect-d\.mov'
+    Wait-Status $(if ($Language -eq 'TR') { '^Ba' } else { '^Connection lost' })
+    $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
+    if ($partial.Count -ne 1 -or $partial[0].Length -ne 10000 -or (Test-Path (Join-Path $target 'disconnect-d.mov'))) { throw 'Disconnected backup did not preserve its partial safely.' }
+    [IO.File]::WriteAllText((Join-Path $source 'reconnected'), '')
+    Click 'ScanMedia'; Click 'BackupNew'
+    Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 1' } else { '^Backup complete: 1 copied, 3 skipped' })
+    if (@(Get-ChildItem $target -File).Count -ne 4 -or (Get-FileHash $disconnected).Hash -ne (Get-FileHash (Join-Path $target 'disconnect-d.mov')).Hash) { throw 'Disconnected backup did not resume correctly.' }
+    Write-Output "PASS $Language WPF backup pause, retained partial, verified resume and completed-file preservation"
 }
 finally {
     if ($process -and !$process.HasExited) { Stop-Process -Id $process.Id -Force; $process.WaitForExit() }
