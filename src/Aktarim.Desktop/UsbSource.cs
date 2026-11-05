@@ -59,7 +59,7 @@ internal sealed class FakeUsbSource(string root) : IUsbSource
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "\n" + info.LastWriteTimeUtc.Ticks + "\n" + info.Length)));
         bool volatileId = File.Exists(path + ".volatile-id");
         return new UsbItem(info.Name, info.Length, () => {
-            if (File.Exists(path + ".track")) File.WriteAllText(path + ".opened", "");
+            if (File.Exists(path + ".track")) { string opened = path + ".opened"; File.WriteAllText(opened, (File.Exists(opened) ? int.Parse(File.ReadAllText(opened)) + 1 : 1).ToString()); }
             if (File.Exists(path + ".unreadable")) throw new UnauthorizedAccessException("Simulated unreadable source.");
             if (File.Exists(path + ".diskfull")) throw new IOException("Simulated full disk.", unchecked((int)0x80070070));
             if (File.Exists(path + ".transient")) { File.Delete(path + ".transient"); throw new IOException("Simulated transient error."); }

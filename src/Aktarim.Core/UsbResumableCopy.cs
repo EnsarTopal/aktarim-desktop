@@ -5,7 +5,7 @@ namespace Aktarim.Core;
 public static class UsbResumableCopy
 {
     public static async Task<string> CopyAsync(Stream source, long length, string destination, string fileName, string partialDirectory, string identity,
-        CancellationToken token = default, IProgress<long>? progress = null, Action? verifying = null, Action<string>? verifiedHash = null, Action<bool>? validatingPartial = null)
+        CancellationToken token = default, IProgress<long>? progress = null, Action? verifying = null, Action<string>? verifiedHash = null, Action<bool>? validatingPartial = null, Func<Task>? checkpoint = null)
     {
         if (length < 0 || string.IsNullOrWhiteSpace(identity)) throw new ArgumentException("A length and source identity are required.");
         partialDirectory = Path.GetFullPath(partialDirectory);
@@ -22,6 +22,7 @@ public static class UsbResumableCopy
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             while (position < existing)
             {
+                if (checkpoint != null) await checkpoint();
                 int requested = (int)Math.Min(buffer.Length, existing - position);
                 int read = await source.ReadAsync(buffer.AsMemory(0, requested), token);
                 if (read == 0) throw new UsbSourceEndedException(position, length, true);
@@ -35,8 +36,11 @@ public static class UsbResumableCopy
             }
             if (existing > 0) validatingPartial?.Invoke(false);
             int count;
-            while ((count = await source.ReadAsync(buffer, token)) != 0)
+            while (true)
             {
+                if (checkpoint != null) await checkpoint();
+                count = await source.ReadAsync(buffer, token);
+                if (count == 0) break;
                 position = checked(position + count);
                 if (position > length) throw new InvalidDataException("Source exceeded expected length.");
                 hash.AppendData(buffer, 0, count);

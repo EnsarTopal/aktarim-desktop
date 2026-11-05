@@ -10,6 +10,7 @@ New-Item -ItemType Directory -Path $source, $target, $profile -Force | Out-Null
 $large = Join-Path $source 'b.mov'
 $stream = [IO.File]::Create($large); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
 [IO.File]::WriteAllText(($large + '.slow'), '')
+[IO.File]::WriteAllText(($large + '.track'), '')
 $process = $null
 try {
     $process = Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--fake-usb', "`"$source`"", "`"$target`"", "`"$profile`"") -PassThru
@@ -40,12 +41,13 @@ try {
     Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
     if (!(Test-Path (Join-Path $target 'a.jpg')) -or (Test-Path (Join-Path $target 'b.mov')) -or @(Get-ChildItem $target -Force -Filter '*.partial').Count -ne 0) { throw 'Pause did not preserve completed file or clean the partial file.' }
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
-    if ($partial.Count -ne 1 -or $partial[0].Length -lt 1048576 -or $partial[0].Length -ge 4194304) { throw 'Paused bytes were not retained for resume.' }
+    if ($partial.Count -ne 1 -or (Get-Content ($large + '.opened') -Raw) -ne '1') { throw 'Pause closed or reopened the source.' }
     $history = Get-Content -LiteralPath (Join-Path $profile 'UsbHistory/history.json') -Raw | ConvertFrom-Json
     if (@($history).Count -ne 1) { throw 'Incomplete file was recorded in history.' }
     Click 'ResumeBackup'
     Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 2' } else { '^Backup complete: 2 copied' })
     if (@(Get-ChildItem $target -File).Count -ne 2 -or (Get-FileHash $large).Hash -ne (Get-FileHash (Join-Path $target 'b.mov')).Hash) { throw 'Resume produced duplicates or incorrect output.' }
+    if ((Get-Content ($large + '.opened') -Raw) -ne '1') { throw 'Resume reopened the source instead of continuing its stream.' }
     if (@(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial').Count -ne 0) { throw 'Published partial was not removed.' }
     $crashFile = Join-Path $source 'c.mov'
     $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }

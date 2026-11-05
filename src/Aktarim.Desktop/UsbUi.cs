@@ -150,7 +150,7 @@ public partial class MainWindow
             var pause = MakeButton(backupResume != null ? T("Yedeklemeye devam et", "Resume backup") : T("Yedeklemeyi durdur", "Pause backup"), backupResume != null ? "ResumeBackup" : "PauseBackup", () =>
             {
                 if (backupResume != null) backupResume.TrySetResult(true);
-                else { backupPauseRequested = true; backupCancellation.Cancel(); state = "pausing"; UpdateStatus(); }
+                else { backupPauseRequested = true; state = "pausing"; UpdateStatus(); }
                 return Task.CompletedTask;
             });
             pause.IsEnabled = backupResume != null || !backupPauseRequested;
@@ -331,11 +331,21 @@ public partial class MainWindow
         await CopyItems(selected, false);
     }
     private Task BackupNew() => CopyItems(items.ToArray(), true);
-    private static async Task<string> HashSource(UsbItem item, IProgress<long> progress, CancellationToken token)
+    private async Task BackupCheckpoint()
+    {
+        if (!Dispatcher.CheckAccess()) { await Dispatcher.InvokeAsync(BackupCheckpoint).Task.Unwrap(); return; }
+        if (!backupPauseRequested) return;
+        string previousState = state;
+        backupResume = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        state = "pauseduser"; Render();
+        if (!await backupResume.Task || backupClosing) throw new OperationCanceledException();
+        backupResume = null; backupPauseRequested = false; state = previousState == "pausing" ? "copying" : previousState; Render();
+    }
+    private static async Task<string> HashSource(UsbItem item, IProgress<long> progress, CancellationToken token, Func<Task> checkpoint)
     {
         using var input = item.Open(); using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[1024 * 1024]; long length = 0; int read;
-        while ((read = await input.ReadAsync(buffer, token)) != 0) { length = checked(length + read); if (length > item.Length) throw new InvalidDataException("Source exceeded expected length."); hash.AppendData(buffer, 0, read); progress.Report(length); }
+        while (true) { await checkpoint(); read = await input.ReadAsync(buffer, token); if (read == 0) break; length = checked(length + read); if (length > item.Length) throw new InvalidDataException("Source exceeded expected length."); hash.AppendData(buffer, 0, read); progress.Report(length); }
         if (length != item.Length) throw new UsbSourceEndedException(length, item.Length);
         return Convert.ToHexString(hash.GetHashAndReset());
     }
@@ -360,6 +370,7 @@ public partial class MainWindow
                 {
                     var token = backupCancellation?.Token ?? CancellationToken.None;
                     token.ThrowIfCancellationRequested();
+                    if (onlyNew) await BackupCheckpoint();
                     activeName = item.Name; current = 0; total = item.Length; state = "checking"; UpdateStatus();
                     string decision = "manual";
                     if (onlyNew)
@@ -372,7 +383,7 @@ public partial class MainWindow
                             string sourceHash;
                             for (int attempt = 0; ; attempt++)
                             {
-                                try { sourceHash = await Task.Run(() => HashSource(item, hashProgress, token), token); break; }
+                                try { sourceHash = await Task.Run(() => HashSource(item, hashProgress, token, BackupCheckpoint), token); break; }
                                 catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
                                 { await Task.Delay(300 * (attempt + 1), token); }
                             }
@@ -401,7 +412,7 @@ public partial class MainWindow
                                 Action verify = () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); });
                                 return onlyNew
                                     ? await UsbResumableCopy.CopyAsync(source, item.Length, target, item.Name, usbPartialDirectory, identities[index], token, progress, verify, value => hash = value,
-                                        checking => Dispatcher.Invoke(() => { state = checking ? "resumecheck" : "copying"; UpdateStatus(); }))
+                                        checking => Dispatcher.Invoke(() => { state = checking ? "resumecheck" : "copying"; UpdateStatus(); }), BackupCheckpoint)
                                     : await UsbCopy.CopyAsync(source, item.Length, target, item.Name, cancellationToken: token, progress: progress, verifying: verify, verifiedHash: value => hash = value);
                             });
                             break;
@@ -413,15 +424,11 @@ public partial class MainWindow
                     await usbHistory.AddAsync(item.SourceKey, item.Length, destination, path, hash ?? throw new IOException("Missing verified hash."), item.SourceLocator);
                     copied++;
                     state = "completed"; activeName = item.Name; jobs.Add((true, path, false));
+                    if (onlyNew) await BackupCheckpoint();
                 }
-                catch (OperationCanceledException) when (backupPauseRequested || backupClosing)
+                catch (OperationCanceledException) when (backupClosing)
                 {
-                    if (backupClosing) return;
-                    backupResume = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                    state = "pauseduser"; activeName = item.Name; Render();
-                    if (!await backupResume.Task || backupClosing) return;
-                    backupResume = null; backupCancellation!.Dispose(); backupCancellation = new CancellationTokenSource(); backupPauseRequested = false;
-                    index--; Render(); continue;
+                    return;
                 }
                 catch (Exception e)
                 {
