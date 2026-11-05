@@ -63,12 +63,32 @@ internal sealed class FakeUsbSource(string root) : IUsbSource
             if (File.Exists(path + ".unreadable")) throw new UnauthorizedAccessException("Simulated unreadable source.");
             if (File.Exists(path + ".diskfull")) throw new IOException("Simulated full disk.", unchecked((int)0x80070070));
             if (File.Exists(path + ".transient")) { File.Delete(path + ".transient"); throw new IOException("Simulated transient error."); }
+            if (File.Exists(path + ".short-retries"))
+            {
+                int remaining = int.Parse(File.ReadAllText(path + ".short-retries"));
+                if (remaining > 0) { File.WriteAllText(path + ".short-retries", (remaining - 1).ToString()); return new MemoryStream(File.ReadAllBytes(path)[..(int)(info.Length / 2)]); }
+            }
             if (File.Exists(path + ".slow")) return new SlowFakeStream(path);
             return info.Name.StartsWith("disconnect-", StringComparison.OrdinalIgnoreCase) && !File.Exists(Path.Combine(root, "reconnected"))
             ? new MemoryStream(File.ReadAllBytes(path)[..(int)(info.Length / 2)]) : File.OpenRead(path); },
-            () => File.OpenRead(path + ".thumb"), volatileId ? null : key, File.Exists(path + ".unknown-date") ? null : info.CreationTime, SourceLocator: volatileId ? key : null);
+            () => File.Exists(path + ".slowthumb") ? new SlowThumbnailStream(path + ".thumb") : File.OpenRead(path + ".thumb"), volatileId ? null : key, File.Exists(path + ".unknown-date") ? null : info.CreationTime, SourceLocator: volatileId ? key : null);
     }).ToArray();
     public void Dispose() { }
+}
+
+internal sealed class SlowThumbnailStream(string path) : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
+{
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        File.WriteAllText(path + ".reading", "");
+        Thread.Sleep(150);
+        return base.Read(buffer, offset, count);
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && Position < Length) File.WriteAllText(path + ".incomplete", "");
+        base.Dispose(disposing);
+    }
 }
 
 internal sealed class SlowFakeStream(string path) : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)

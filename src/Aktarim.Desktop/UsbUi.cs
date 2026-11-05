@@ -252,7 +252,8 @@ public partial class MainWindow
             try
             {
                 using var input = open(); using var output = new MemoryStream(); var buffer = new byte[65536];
-                while (true) { token.ThrowIfCancellationRequested(); int read = input.Read(buffer, 0, Math.Min(buffer.Length, limit + 1 - (int)output.Length)); if (read == 0) break; output.Write(buffer, 0, read); if (output.Length > limit) return null; }
+                // Finish a bounded WPD preview before honoring cancellation: closing it mid-read can leave the iPhone driver unable to open the next file.
+                while (true) { int read = input.Read(buffer, 0, Math.Min(buffer.Length, limit + 1 - (int)output.Length)); if (read == 0) break; output.Write(buffer, 0, read); if (output.Length > limit) return null; }
                 output.Position = 0;
                 var image = new BitmapImage(); image.BeginInit(); image.CacheOption = BitmapCacheOption.OnLoad; image.DecodePixelWidth = 320; image.StreamSource = output; image.EndInit(); image.Freeze(); return image;
             }
@@ -384,8 +385,8 @@ public partial class MainWindow
                             for (int attempt = 0; ; attempt++)
                             {
                                 try { sourceHash = await Task.Run(() => HashSource(item, hashProgress, token, BackupCheckpoint), token); break; }
-                                catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
-                                { await Task.Delay(300 * (attempt + 1), token); }
+                                catch (Exception e) when (attempt < 4 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
+                                { await Task.Delay(500 * (1 << attempt), token); }
                             }
                             try { decision = await usbHistory.CheckAsync(null, item.Length, destination, item.SourceLocator, sourceHash, token); }
                             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { decision = "history-unavailable"; }
@@ -417,8 +418,8 @@ public partial class MainWindow
                             });
                             break;
                         }
-                        catch (Exception e) when (attempt < 2 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
-                        { await Task.Delay(300 * (attempt + 1), token); state = "copying"; UpdateStatus(); }
+                        catch (Exception e) when (attempt < 4 && !TransferErrors.IsDiskFull(e) && e is not ArgumentException and not UnauthorizedAccessException and not OperationCanceledException)
+                        { await Task.Delay(500 * (1 << attempt), token); state = "copying"; UpdateStatus(); }
                     }
                     published = path;
                     await usbHistory.AddAsync(item.SourceKey, item.Length, destination, path, hash ?? throw new IOException("Missing verified hash."), item.SourceLocator);

@@ -44,6 +44,7 @@ jobs:
         run: |
           ./tests/usb-gallery-ui.ps1
           ./tests/usb-queue-ui.ps1
+          ./tests/usb-preview-cancellation-ui.ps1
           ./tests/usb-pause-ui.ps1 -Language EN
           ./tests/usb-pause-ui.ps1 -Language TR
           ./tests/usb-ui.ps1 -Language EN
