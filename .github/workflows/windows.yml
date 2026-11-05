@@ -47,6 +47,8 @@ jobs:
           ./tests/usb-preview-cancellation-ui.ps1
           ./tests/usb-pause-ui.ps1 -Language EN
           ./tests/usb-pause-ui.ps1 -Language TR
+          ./tests/usb-pause-ui.ps1 -Language EN -Manual
+          ./tests/usb-pause-ui.ps1 -Language TR -Manual
           ./tests/usb-ui.ps1 -Language EN
           ./tests/usb-ui.ps1 -Language TR
       - name: Safari queue regression

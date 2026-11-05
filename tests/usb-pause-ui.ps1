@@ -1,4 +1,4 @@
-param([ValidateSet('TR','EN')][string]$Language = 'EN')
+param([ValidateSet('TR','EN')][string]$Language = 'EN', [switch]$Manual)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -35,20 +35,22 @@ try {
         }
         throw "Status did not match $pattern : $status"
     }
-    Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'; Click 'BackupNew'
+    Click ('Lang' + $Language); Click 'Nav1'; Click 'FindDevices'; Click 'ScanMedia'
+    if ($Manual) { Click 'SelectVisible'; Click 'CopySelected' } else { Click 'BackupNew' }
     Wait-Status 'b\.mov.*1 MB'
     Click 'PauseBackup'
-    Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
+    Wait-Status $(if ($Manual) { if ($Language -eq 'TR') { '^Kopyalama durduruldu' } else { '^Copying paused' } } elseif ($Language -eq 'TR') { '^Yedekleme durduruldu' } else { '^Backup paused' })
     if (!(Test-Path (Join-Path $target 'a.jpg')) -or (Test-Path (Join-Path $target 'b.mov')) -or @(Get-ChildItem $target -Force -Filter '*.partial').Count -ne 0) { throw 'Pause did not preserve completed file or clean the partial file.' }
     $partial = @(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial')
     if ($partial.Count -ne 1 -or (Get-Content ($large + '.opened') -Raw) -ne '1') { throw 'Pause closed or reopened the source.' }
     $history = Get-Content -LiteralPath (Join-Path $profile 'UsbHistory/history.json') -Raw | ConvertFrom-Json
     if (@($history).Count -ne 1) { throw 'Incomplete file was recorded in history.' }
     Click 'ResumeBackup'
-    Wait-Status $(if ($Language -eq 'TR') { '^Yedekleme bitti: 2' } else { '^Backup complete: 2 copied' })
+    Wait-Status $(if ($Manual) { if ($Language -eq 'TR') { '^Yerel kopya do' } else { '^Local copy verified' } } elseif ($Language -eq 'TR') { '^Yedekleme bitti: 2' } else { '^Backup complete: 2 copied' })
     if (@(Get-ChildItem $target -File).Count -ne 2 -or (Get-FileHash $large).Hash -ne (Get-FileHash (Join-Path $target 'b.mov')).Hash) { throw 'Resume produced duplicates or incorrect output.' }
     if ((Get-Content ($large + '.opened') -Raw) -ne '1') { throw 'Resume reopened the source instead of continuing its stream.' }
     if (@(Get-ChildItem (Join-Path $profile 'UsbPartial') -Filter '*.partial').Count -ne 0) { throw 'Published partial was not removed.' }
+    if ($Manual) { Write-Output "PASS $Language WPF selected-copy pause and verified resume"; return }
     $crashFile = Join-Path $source 'c.mov'
     $stream = [IO.File]::Create($crashFile); try { $stream.SetLength(4194304) } finally { $stream.Dispose() }
     [IO.File]::WriteAllText(($crashFile + '.slow'), '')

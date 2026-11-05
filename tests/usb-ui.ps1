@@ -62,6 +62,7 @@ try {
     if (Get-ChildItem $target -Filter "*.partial") { throw "Interrupted temporary file remained." }
     $status = (Find-Element "UsbStatus").Current.Name
     if ($status -notmatch "^(Connection lost|Ba).+disconnect-b\.mov") { throw "Failure was not displayed: $status" }
+    if ($status -notmatch '\d[\d.,]* / \d[\d.,]* (bytes read|bayt okundu)') { throw "Short-read details were not displayed: $status" }
     $historyPath = Join-Path $profile 'UsbHistory/history.json'
     $entries = @(Get-Content -LiteralPath $historyPath -Raw | ConvertFrom-Json | Where-Object { $_.Destination -eq $target })
     if ($entries.Count -ne 1 -or [IO.Path]::GetFileName($entries[0].Path) -ne 'a-good.mov') { throw 'Interrupted copy was added to history or verified copy missing.' }

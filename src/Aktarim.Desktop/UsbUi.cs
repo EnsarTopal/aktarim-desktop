@@ -24,7 +24,7 @@ public partial class MainWindow
     private readonly List<string> backupDiagnostics = [];
     private readonly List<(bool Success, string Path, bool HistoryError)> jobs = [];
     private bool busy, listView;
-    private string state = "", query = "", activeName = "";
+    private string state = "", query = "", activeName = "", failureDetail = "";
     private int filter, galleryPage, sort;
     private long current, total;
     private TextBlock? statusText, selectionText, countText;
@@ -35,6 +35,7 @@ public partial class MainWindow
     private readonly SemaphoreSlim deviceGate = new(1, 1);
     private CancellationTokenSource? previewCancellation;
     private CancellationTokenSource? backupCancellation;
+    private bool manualCopy;
     private TaskCompletionSource<bool>? backupResume;
     private bool backupPauseRequested, backupClosing;
     private readonly Dictionary<UsbItem, BitmapSource?> previewCache = [];
@@ -147,7 +148,7 @@ public partial class MainWindow
         }
         else
         {
-            var pause = MakeButton(backupResume != null ? T("Yedeklemeye devam et", "Resume backup") : T("Yedeklemeyi durdur", "Pause backup"), backupResume != null ? "ResumeBackup" : "PauseBackup", () =>
+            var pause = MakeButton(backupResume != null ? (manualCopy ? T("Kopyalamaya devam et", "Resume copying") : T("Yedeklemeye devam et", "Resume backup")) : (manualCopy ? T("Kopyalamayı durdur", "Pause copying") : T("Yedeklemeyi durdur", "Pause backup")), backupResume != null ? "ResumeBackup" : "PauseBackup", () =>
             {
                 if (backupResume != null) backupResume.TrySetResult(true);
                 else { backupPauseRequested = true; state = "pausing"; UpdateStatus(); }
@@ -288,11 +289,11 @@ public partial class MainWindow
             "checking" => T("Önceki yedek doğrulanıyor: ", "Checking previous backup: ") + activeName + (total > 0 ? " · " + Size(current) + " / " + Size(total) : ""),
             "resumecheck" => T("Kaydedilen bölüm kaynakla doğrulanıyor: ", "Checking saved portion against source: ") + activeName + " · " + Size(current) + " / " + Size(total),
             "historyerror" => T("Kopya doğrulandı ancak geçmiş kaydedilemedi; dosya sonraki yedeklemede tekrar kopyalanabilir: ", "Copy verified, but history could not be saved; the file may be copied again on the next backup: ") + activeName,
-            "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu. Yeniden bağlayın, aygıtları bulun, medyayı tarayın ve yedeklemeyi başlatın: ", "Connection lost or source ended early. Reconnect, find devices, scan media, then restart the backup: ") + activeName,
-            "pausedmanual" => T("Bağlantı kesildi veya kaynak yarım okundu; tamamlananlar korundu, yarım dosyayı yeniden seçin: ", "Connection lost or source ended early; completed files are preserved, select the partial file again: ") + activeName,
+            "pausedconnection" => T("Bağlantı kesildi veya kaynak yarım okundu. Yeniden bağlayın, aygıtları bulun, medyayı tarayın ve yedeklemeyi başlatın: ", "Connection lost or source ended early. Reconnect, find devices, scan media, then restart the backup: ") + activeName + failureDetail,
+            "pausedmanual" => T("Bağlantı kesildi veya kaynak yarım okundu; tamamlananlar korundu, yarım dosyayı yeniden seçin: ", "Connection lost or source ended early; completed files are preserved, select the partial file again: ") + activeName + failureDetail,
             "pauseddisk" => T("Hedef disk dolu; kuyruk duraklatıldı. Tamamlanan dosyalar korundu: ", "Destination disk is full; queue paused. Completed files are preserved: ") + activeName,
-            "pausing" => T("Yedekleme durduruluyor…", "Pausing backup…"),
-            "pauseduser" => T("Yedekleme durduruldu. Devam ederken kayıtlı bölüm kaynakla doğrulanır: ", "Backup paused. The saved portion is checked against the source when resumed: ") + activeName,
+            "pausing" => manualCopy ? T("Kopyalama durduruluyor…", "Pausing copying…") : T("Yedekleme durduruluyor…", "Pausing backup…"),
+            "pauseduser" => (manualCopy ? T("Kopyalama durduruldu: ", "Copying paused: ") : T("Yedekleme durduruldu: ", "Backup paused: ")) + activeName,
             "backupissues" => T("Bazı dosyalar kopyalanamadı; diğer dosyalar işlendi: ", "Some files could not be copied; other files were processed: ") + activeName,
             "failed" => T("Aktarım başarısız veya bağlantı kesildi. Yarım dosya tamamlanmadı; yeniden seçip baştan deneyin: ", "Transfer failed or connection was interrupted. The partial file was not completed; select it again to restart: ") + activeName,
             "error" => T("Aygıt işlemi başarısız. Kabloyu, kilidi ve güven onayını kontrol edin: ", "Device operation failed. Check cable, lock and trust approval: ") + activeName,
@@ -357,8 +358,8 @@ public partial class MainWindow
         var identities = selected.Select(item => item.SourceLocator ?? item.SourceKey ?? Guid.NewGuid().ToString("N")).ToArray();
         bool dateFolders = settings.UsbDateFolders;
         int copied = 0, skipped = 0, failures = 0; bool paused = false;
-        backupDiagnostics.Clear();
-        if (onlyNew) { backupClosing = false; backupPauseRequested = false; backupCancellation = new CancellationTokenSource(); }
+        backupDiagnostics.Clear(); failureDetail = "";
+        manualCopy = !onlyNew; backupClosing = false; backupPauseRequested = false; backupCancellation = new CancellationTokenSource();
         busy = true; Render();
         await deviceGate.WaitAsync();
         try
@@ -371,7 +372,7 @@ public partial class MainWindow
                 {
                     var token = backupCancellation?.Token ?? CancellationToken.None;
                     token.ThrowIfCancellationRequested();
-                    if (onlyNew) await BackupCheckpoint();
+                    await BackupCheckpoint();
                     activeName = item.Name; current = 0; total = item.Length; state = "checking"; UpdateStatus();
                     string decision = "manual";
                     if (onlyNew)
@@ -411,10 +412,8 @@ public partial class MainWindow
                             {
                                 using var source = item.Open();
                                 Action verify = () => Dispatcher.Invoke(() => { state = "verifying"; UpdateStatus(); });
-                                return onlyNew
-                                    ? await UsbResumableCopy.CopyAsync(source, item.Length, target, item.Name, usbPartialDirectory, identities[index], token, progress, verify, value => hash = value,
-                                        checking => Dispatcher.Invoke(() => { state = checking ? "resumecheck" : "copying"; UpdateStatus(); }), BackupCheckpoint)
-                                    : await UsbCopy.CopyAsync(source, item.Length, target, item.Name, cancellationToken: token, progress: progress, verifying: verify, verifiedHash: value => hash = value);
+                                return await UsbResumableCopy.CopyAsync(source, item.Length, target, item.Name, usbPartialDirectory, identities[index], token, progress, verify, value => hash = value,
+                                    checking => Dispatcher.Invoke(() => { state = checking ? "resumecheck" : "copying"; UpdateStatus(); }), BackupCheckpoint);
                             });
                             break;
                         }
@@ -425,7 +424,7 @@ public partial class MainWindow
                     await usbHistory.AddAsync(item.SourceKey, item.Length, destination, path, hash ?? throw new IOException("Missing verified hash."), item.SourceLocator);
                     copied++;
                     state = "completed"; activeName = item.Name; jobs.Add((true, path, false));
-                    if (onlyNew) await BackupCheckpoint();
+                    await BackupCheckpoint();
                 }
                 catch (OperationCanceledException) when (backupClosing)
                 {
@@ -438,9 +437,12 @@ public partial class MainWindow
                     if (TransferErrors.IsDiskFull(e)) { state = "pauseddisk"; paused = true; break; }
                     if (TransferErrors.IsDisconnected(e))
                     {
-                        if (e is UsbSourceEndedException ended)
+                        if (e.GetBaseException() is UsbSourceEndedException ended)
+                        {
+                            failureDetail = $" · {ended.Actual:N0} / {ended.Expected:N0} " + T("bayt okundu", "bytes read");
                             backupDiagnostics.Add(item.Name + ": " + (ended.ValidatingPartial ? T("kayıtlı bölüm doğrulanırken", "while checking the saved portion") : T("kaynak okunurken", "while reading the source")) + $" {ended.Actual:N0} / {ended.Expected:N0} " + T("bayt okundu", "bytes read"));
-                        else backupDiagnostics.Add(item.Name + ": " + e.GetType().Name + $" (0x{e.HResult:X8})");
+                        }
+                        else { var cause = e.GetBaseException(); failureDetail = $" · {cause.GetType().Name} (0x{cause.HResult:X8})"; backupDiagnostics.Add(item.Name + ": " + failureDetail); }
                         state = onlyNew ? "pausedconnection" : "pausedmanual"; paused = true; break;
                     }
                     backupDiagnostics.Add(item.Name + ": " + T("dosya işlenemedi", "file could not be processed") + " (" + e.GetType().Name + ")");
