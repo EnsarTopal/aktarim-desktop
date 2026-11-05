@@ -5,7 +5,7 @@ namespace Aktarim.Core;
 public static class UsbCopy
 {
     // The source hash verifies the local write, not the original bytes on the device.
-    public static async Task<string> CopyAsync(Stream source, long expectedLength, string destination, string fileName, CancellationToken cancellationToken = default, IProgress<long>? progress = null, Action? verifying = null)
+    public static async Task<string> CopyAsync(Stream source, long expectedLength, string destination, string fileName, CancellationToken cancellationToken = default, IProgress<long>? progress = null, Action? verifying = null, Action<string>? verifiedHash = null)
     {
         if (expectedLength < 0) throw new ArgumentOutOfRangeException(nameof(expectedLength));
         if (string.IsNullOrWhiteSpace(fileName) || fileName != Path.GetFileName(fileName) || fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
@@ -33,7 +33,7 @@ public static class UsbCopy
                     await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
                     progress?.Report(count);
                 }
-                if (count != expectedLength) throw new EndOfStreamException("Source ended before expected length.");
+                if (count != expectedLength) throw new UsbSourceEndedException(count, expectedLength);
                 await output.FlushAsync(cancellationToken);
                 output.Flush(true);
                 byte[] expectedHash = sourceHash.GetHashAndReset();
@@ -47,7 +47,7 @@ public static class UsbCopy
                     cancellationToken.ThrowIfCancellationRequested();
                     var target = Path.Combine(destination, i == 0 ? fileName : $"{stem} ({i}){extension}");
                     if (File.Exists(target)) continue;
-                    try { SafeDirectories.Publish(output, temp, target); return target; }
+                    try { SafeDirectories.Publish(output, temp, target); verifiedHash?.Invoke(Convert.ToHexString(actualHash)); return target; }
                     catch (IOException) when (File.Exists(target)) { }
                 }
             }

@@ -229,6 +229,91 @@ try
     var usbSecond = await UsbCopy.CopyAsync(new MemoryStream(secondBytes), secondBytes.Length, root, "usb.mov");
     Console.WriteLine($"USB first: {usbPath}; second: {usbSecond}; entries: {string.Join(", ", Directory.GetFiles(root).Select(Path.GetFileName))}");
     Check(usbPath != usbSecond && Hash(await File.ReadAllBytesAsync(usbPath)) == Hash(first), "USB existing file preserved");
+    string usbParts = Path.Combine(root, "usb-parts"), usbResumeTarget = Path.Combine(root, "usb-resume");
+    try { await UsbResumableCopy.CopyAsync(new MemoryStream(first[..(first.Length / 2)]), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a"); throw new Exception("Truncated source was accepted."); }
+    catch (UsbSourceEndedException e) { Check(e.Actual == first.Length / 2 && e.Expected == first.Length && !e.ValidatingPartial, "USB short source reports exact byte counts"); }
+    var usbPartial = Directory.GetFiles(usbParts, "*.partial").Single();
+    Check(new FileInfo(usbPartial).Length == first.Length / 2 && !File.Exists(Path.Combine(usbResumeTarget, "resume.mov")), "USB partial saved privately without publication");
+    try { await UsbResumableCopy.CopyAsync(new MemoryStream(first[..100]), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a"); throw new Exception("Truncated source during validation was accepted."); }
+    catch (UsbSourceEndedException e) { Check(e.Actual == 100 && e.Expected == first.Length && e.ValidatingPartial, "USB short source during saved-prefix validation is distinguished"); }
+    bool checkedPrefix = false;
+    var resumedUsb = await UsbResumableCopy.CopyAsync(new MemoryStream(first), first.Length, usbResumeTarget, "resume.mov", usbParts, "source-a", validatingPartial: checking => checkedPrefix |= checking);
+    Check(checkedPrefix && Hash(await File.ReadAllBytesAsync(resumedUsb)) == Hash(first) && !File.Exists(usbPartial), "USB saved prefix checked and resumed copy verified");
+    await Throws<EndOfStreamException>(() => UsbResumableCopy.CopyAsync(new MemoryStream(first[..(first.Length / 2)]), first.Length, usbResumeTarget, "changed.mov", usbParts, "source-b"), "USB changed partial fixture");
+    usbPartial = Directory.GetFiles(usbParts, "*.partial").Single();
+    await File.WriteAllBytesAsync(usbPartial, new byte[first.Length / 2]);
+    await Throws<IOException>(() => UsbResumableCopy.CopyAsync(new MemoryStream(first), first.Length, usbResumeTarget, "changed.mov", usbParts, "source-b"), "USB changed prefix rejected");
+    Check(!File.Exists(Path.Combine(usbResumeTarget, "changed.mov")) && new FileInfo(usbPartial).Length == 0, "USB changed partial reset without publication");
+    var retriedUsb = await UsbResumableCopy.CopyAsync(new MemoryStream(first), first.Length, usbResumeTarget, "changed.mov", usbParts, "source-b");
+    Check(Hash(await File.ReadAllBytesAsync(retriedUsb)) == Hash(first), "USB changed prefix safely restarted");
+    var sentinel = Path.Combine(root, "partial-sentinel.bin");
+    await File.WriteAllBytesAsync(sentinel, secondBytes);
+    var linkKey = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("source-link\n" + Path.GetFullPath(usbResumeTarget) + "\nlink.mov\n" + first.Length)));
+    var partialLink = Path.Combine(usbParts, linkKey + ".partial");
+    File.CreateSymbolicLink(partialLink, sentinel);
+    await Throws<IOException>(() => UsbResumableCopy.CopyAsync(new MemoryStream(first), first.Length, usbResumeTarget, "link.mov", usbParts, "source-link"), "USB partial symlink rejected");
+    Check(Hash(await File.ReadAllBytesAsync(sentinel)) == Hash(secondBytes), "USB partial symlink target unchanged");
+    File.Delete(partialLink);
+    var history = new UsbHistory(Path.Combine(root, "history"));
+    var backupRoot = Path.Combine(root, "backup");
+    var backupBytes = System.Text.Encoding.UTF8.GetBytes("first item");
+    var otherBytes = System.Text.Encoding.UTF8.GetBytes("other item");
+    async Task<bool> Backup(string? key, byte[] data)
+    {
+        if (await history.IsBackedUpAsync(key, data.Length, backupRoot)) return false;
+        string? hash = null;
+        var path = await UsbCopy.CopyAsync(new MemoryStream(data), data.Length, backupRoot, "same.jpg", verifiedHash: value => hash = value);
+        await history.AddAsync(key, data.Length, backupRoot, path, hash!);
+        return true;
+    }
+    Check(await Backup("device-object-one-version-one", backupBytes), "new USB item copied");
+    Check(await history.CheckAsync(null, backupBytes.Length, backupRoot) == "identity-unknown", "uncertain source diagnostic");
+    Check(await history.CheckAsync("unknown-source", backupBytes.Length, backupRoot) == "no-record", "missing record diagnostic");
+    Check(await history.CheckAsync("device-object-one-version-one", backupBytes.Length, backupRoot) == "verified", "verified copy diagnostic");
+    history = new UsbHistory(Path.Combine(root, "history"));
+    Check(!await Backup("device-object-one-version-one", backupBytes), "verified USB backup skipped after restart");
+    Check(await Backup("device-object-two-version-one", otherBytes), "same name different USB identity copied");
+    var firstBackup = Path.Combine(backupRoot, "same.jpg");
+    var secondBackup = Path.Combine(backupRoot, "same (1).jpg");
+    Check(Hash(await File.ReadAllBytesAsync(firstBackup)) == Hash(backupBytes) && Hash(await File.ReadAllBytesAsync(secondBackup)) == Hash(otherBytes), "same named backups preserved");
+    File.Delete(firstBackup);
+    Check(await history.CheckAsync("device-object-one-version-one", backupBytes.Length, backupRoot) == "copy-missing-or-changed", "deleted copy diagnostic");
+    Check(await Backup("device-object-one-version-one", backupBytes) && Hash(await File.ReadAllBytesAsync(firstBackup)) == Hash(backupBytes), "deleted backup recreated");
+    await File.WriteAllTextAsync(firstBackup, "changed");
+    Check(await Backup("device-object-one-version-one", backupBytes) && await File.ReadAllTextAsync(firstBackup) == "changed", "modified backup preserved and recopied");
+    var newest = (await history.EntriesAsync()).Last(x => x.SourceKey == "device-object-one-version-one").Path;
+    File.Move(newest, newest + ".moved");
+    Check(await Backup("device-object-one-version-one", backupBytes), "moved backup recopied");
+    Check(await Backup(null, backupBytes) && await Backup(null, backupBytes), "uncertain USB identity never skipped");
+    Check(!await history.IsBackedUpAsync("device-object-one-version-one", backupBytes.Length, Path.Combine(root, "other-target")), "different destination not skipped");
+    Check((await history.EntriesAsync()).Count == 7, "only successful USB copies recorded");
+    var contentHistory = new UsbHistory(Path.Combine(root, "content-history"));
+    var contentPath = await UsbCopy.CopyAsync(new MemoryStream(backupBytes), backupBytes.Length, Path.Combine(root, "content-target"), "photo.jpg");
+    var contentTarget = Path.GetDirectoryName(contentPath)!;
+    await contentHistory.AddAsync(null, backupBytes.Length, contentTarget, contentPath, Hash(backupBytes), "stable-device-location");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location") == "content-required", "unstable WPD ID requires source content verification");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location", Hash(backupBytes)) == "verified", "source and destination hashes allow safe skip across connections");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location", Hash(otherBytes)) == "source-changed", "same locator and size never skip different content");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "different-location", Hash(backupBytes)) == "no-record", "same content at another source location is not guessed");
+    File.Delete(contentPath);
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location", Hash(backupBytes)) == "copy-missing-or-changed", "source hash does not mask deleted destination");
+    var brokenDir = Path.Combine(root, "broken-history");
+    Directory.CreateDirectory(brokenDir);
+    var brokenPath = Path.Combine(brokenDir, "history.json");
+    const string broken = "{ invalid history";
+    await File.WriteAllTextAsync(brokenPath, broken);
+    var brokenHistory = new UsbHistory(brokenDir);
+    bool rejected = false;
+    try { await brokenHistory.IsBackedUpAsync("source", 1, backupRoot); } catch (UsbHistoryCorruptException) { rejected = true; }
+    Check(rejected && await File.ReadAllTextAsync(brokenPath) == broken, "corrupt history is not trusted or changed without approval");
+    string? archive = await brokenHistory.RecoverCorruptAsync();
+    Check(archive != null && await File.ReadAllTextAsync(archive) == broken && (await brokenHistory.EntriesAsync()).Count == 0, "approved recovery preserves corrupt history and starts empty");
+    Check(!await brokenHistory.IsBackedUpAsync("source", 1, backupRoot), "recovered empty history never skips files");
+    Check(await brokenHistory.RecoverCorruptAsync() == null, "recovery does not overwrite valid history");
+    await File.WriteAllTextAsync(brokenPath, "[null]");
+    rejected = false;
+    try { await brokenHistory.EntriesAsync(); } catch (UsbHistoryCorruptException) { rejected = true; }
+    Check(rejected, "structurally corrupt history rejected");
     Console.WriteLine("All tests passed.");
 }
 finally

@@ -20,6 +20,8 @@ Fiziksel cihaz adımları ve sertifika ön koşulları için [iPhone test planı
 
 Wi-Fi yarım aktarımları son etkinlikten itibaren 7 gün saklanır. Alıcı açıldığında ve dosya seçildiğinde süresi dolmuş, etkin olmayan yarım aktarımlar temizlenir. Yarım aktarımlar için uygulama genelinde ayrılan dosya boyutu toplamı en fazla 200 GiB'dir; kotayı aşan yeni aktarım reddedilir. Başarıyla doğrulanıp yayımlanan aktarımın parçaları silinir. Önceden tamamlanan bir aktarım tekrar seçildiğinde hedef dosyanın boyutu ve SHA-256 özeti yeniden doğrulanır; dosya yoksa veya değişmişse yeniden aktarılır ve mevcut dosyalar korunur.
 
+USB galerisindeki **Yeni dosyaları yedekle**, yalnızca kalıcı aygıt/nesne kimliği ve değişim zamanı bilinen, geçmişte doğrulanmış hedef kopyası halen SHA-256 ile eşleşen dosyaları atlar. Kimlik veya değişim zamanı bilinmiyorsa dosya yeniden kopyalanır. Aktarım geçmişi yerel olarak saklanır. Ayarlardaki isteğe bağlı Yıl/Ay/Gün klasörlemesi yalnızca aygıtın bildirdiği medya tarihini kullanır; tarih bilinmiyorsa dosya hedef klasöre yazılır. Telefona bağlanınca otomatik yedekleme yapılmaz.
+
 Bekleyen doğrulamalar: temiz bir Windows kurulumunda taşınabilir EXE'nin çalıştırılması ve gerçek iPhone Safari ile 5 GB üzeri dosyada kesintiden devam testi.
 
 Donanımsız testler: `dotnet run --project tests/Aktarim.Core.Tests -c Release`; Release derlemesinden sonra `powershell -ExecutionPolicy Bypass -File tests/usb-ui.ps1 -Language TR` (ve `EN`) ve `tests/usb-previews.ps1`. `tests/lan-ui.ps1 -Mode HTTPS` ve `-Mode HTTP` gerçek WPF onay penceresi ile Chrome/Playwright kullanır; Playwright, jsQR, pngjs ve Chrome gerektirir, test sertifikasına yalnızca test tarayıcısı güvenir. Test ekrandaki QR görüntüsünü çözümler; fiziksel kamera okutması değildir.
