@@ -4,6 +4,8 @@ const words = {
  en:{title:'Send to Windows',intro:'Select one or more files from Files.',choose:'Choose files',send:'Send / resume',hint:'If disconnected, this page retries. If you close it, reopen and reselect the same files.',waiting:'Approve the request on Windows…',paired:'Paired. Choose your files.',hashing:'Checking file',uploading:'Uploading',verifying:'Verifying SHA-256…',done:'Verified and saved: ',error:'Transfer could not finish. Check the receiver and reselect the files.',auth:'The session is invalid or expired. Restart the receiver on Windows and scan its new QR code.',select:'Choose files first.',selected:'files selected',reused:'verified chunks reused',offline:'Waiting for connection; retrying…',completed:'Completed',failed:'Could not complete'}
 };
 let lang=localStorage.getItem('aktarim-language')||(navigator.language.toLowerCase().startsWith('tr')?'tr':'en'); if(!words[lang])lang='en';
+Object.assign(words.tr,{disk:'Windows hedef diski dolu. Yer açıp gönderime devam edin.',paused:'Bağlantı kurulamadı. Kuyruk duraklatıldı; bağlantıyı düzeltip yeniden deneyin.',pending:'Bekliyor',rowPaused:'Duraklatıldı'});
+Object.assign(words.en,{disk:'The Windows destination disk is full. Free space and resume.',paused:'Could not connect. The queue is paused; restore the connection and retry.',pending:'Waiting',rowPaused:'Paused'});
 const $=id=>document.getElementById(id),status=$('status');
 function translate(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=words[lang][e.dataset.i18n]);$('security').textContent=location.protocol==='http:'?(lang==='tr'?'Şifresiz yerel aktarım: ağdaki kişiler verileri okuyabilir veya değiştirebilir.':'Unencrypted local transfer: people on the network can read or modify data.'):'';localStorage.setItem('aktarim-language',lang);selection()}
 function selection(){$('selection').textContent=$('file').files.length?$('file').files.length+' '+words[lang].selected:''}
@@ -11,15 +13,16 @@ $('file').onchange=selection;$('tr').onclick=()=>{lang='tr';translate()};$('en')
 function paired(){$('pair').hidden=true;$('transfer').hidden=false;status.textContent=words[lang].paired}
 const json=obj=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
 async function api(path,options={}){
- for(;;){
+ for(let attempt=0;;attempt++){
   try{
    const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),180000);
    let response;try{response=await fetch(path,{...options,credentials:'same-origin',cache:'no-store',signal:controller.signal})}finally{clearTimeout(timer)}
-   if(response.status>=500)throw Error('network');
+   if(response.status===507)throw Error('disk');
+   if(response.status>=500||response.status===429)throw Error('network');
    if(response.status===401)throw Error('auth');
    if(!response.ok)throw Error('request');
    return response;
-  }catch(e){if(e.message==='auth'||e.message==='request')throw e;status.textContent=words[lang].offline;await new Promise(r=>setTimeout(r,3000))}
+  }catch(e){if(e.message==='auth'||e.message==='request'||e.message==='disk')throw e;if(attempt>=2)throw Error('offline');status.textContent=words[lang].offline;await new Promise(r=>setTimeout(r,1000*(attempt+1)))}
  }
 }
 async function pair(){
@@ -45,7 +48,8 @@ $('send').onclick=async()=>{
  const files=Array.from($('file').files);if(!files.length){status.textContent=words[lang].select;return}
  $('send').disabled=true;$('file').disabled=true;$('files').replaceChildren();
  let failed=false;
- try{for(const file of files){const row=document.createElement('li');row.textContent=file.name;$('files').append(row);$('progress').value=0;try{await transfer(file,row)}catch(e){row.textContent=file.name+' — '+words[lang].failed;if(e.message==='auth')throw e;failed=true}}if(failed)status.textContent=words[lang].error}
- catch(e){status.textContent=e.message==='auth'?words[lang].auth:words[lang].error}
+ const rows=files.map(file=>{const row=document.createElement('li');row.textContent=file.name+' — '+words[lang].pending;$('files').append(row);return row});
+ try{for(let i=0;i<files.length;i++){const file=files[i],row=rows[i];$('progress').value=0;try{await transfer(file,row)}catch(e){if(['auth','disk','offline'].includes(e.message)){row.textContent=file.name+' — '+words[lang].rowPaused;throw e}row.textContent=file.name+' — '+words[lang].failed;failed=true}}if(failed)status.textContent=words[lang].error}
+ catch(e){status.textContent=e.message==='auth'?words[lang].auth:e.message==='disk'?words[lang].disk:e.message==='offline'?words[lang].paused:words[lang].error}
  finally{$('send').disabled=false;$('file').disabled=false}
 };

@@ -39,6 +39,13 @@ jobs:
       - name: WPF USB backup UI regression
         shell: pwsh
         run: ./tests/usb-backup-ui.ps1
+      - name: WPF gallery and USB queue regressions
+        shell: pwsh
+        run: |
+          ./tests/usb-gallery-ui.ps1
+          ./tests/usb-queue-ui.ps1
+          ./tests/usb-ui.ps1 -Language EN
+          ./tests/usb-ui.ps1 -Language TR
       - name: Safari queue regression
         run: node tests/safari-queue.cjs
       - name: Publish single-file EXE and SHA-256

@@ -5,7 +5,7 @@ using System.Text;
 
 namespace Aktarim.Desktop;
 
-internal sealed record UsbItem(string Name, long Length, Func<Stream> Open, Func<Stream>? OpenThumbnail = null, string? SourceKey = null, DateTime? Taken = null, string? Identity = null);
+internal sealed record UsbItem(string Name, long Length, Func<Stream> Open, Func<Stream>? OpenThumbnail = null, string? SourceKey = null, DateTime? Taken = null, DateTime? SortDate = null, string? SourceLocator = null);
 internal interface IUsbSource : IDisposable
 {
     string Name { get; }
@@ -32,23 +32,19 @@ internal sealed class WpdSource(MediaDevice device) : IUsbSource
                 if (UsbSources.IsMedia(file.Name))
                 {
                     var item = file;
-                    string? key = null, identity = null; DateTime? taken = null;
+                    string? locator = null; DateTime? taken = null, modified = null;
                     try
                     {
-                        var modified = item.LastWriteTime;
-                        if (!string.IsNullOrWhiteSpace(device.DeviceId) && !string.IsNullOrWhiteSpace(item.PersistentUniqueId) &&
-                            !(Guid.TryParse(item.PersistentUniqueId, out var uid) && uid == Guid.Empty))
-                        {
-                            identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{device.DeviceId}\n{item.PersistentUniqueId}")));
-                            if (modified is { Year: > 1970 }) key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{identity}\n{modified.Value.Ticks}\n{item.Length}")));
-                        }
+                        modified = item.LastWriteTime;
+                        if (!string.IsNullOrWhiteSpace(device.DeviceId) && !string.IsNullOrWhiteSpace(item.FullName) && modified is { Year: > 1970 })
+                            locator = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{device.DeviceId}\n{item.FullName}\n{modified.Value.Ticks}\n{item.Length}")));
                     }
                     catch (Exception) { }
                     try { if (item.DateAuthored is { Year: > 1970 } date) taken = date; } catch (Exception) { }
-                    result.Add(new(item.Name, checked((long)item.Length), () => item.OpenRead(), () => item.OpenThumbnail(), key, taken, identity));
+                    result.Add(new(item.Name, checked((long)item.Length), () => item.OpenRead(), () => item.OpenThumbnail(), null, taken, modified, locator));
                 }
-        var duplicates = result.Where(x => x.Identity != null).GroupBy(x => x.Identity).Where(x => x.Count() > 1).Select(x => x.Key).ToHashSet();
-        return result.Select(item => duplicates.Contains(item.Identity) ? item with { SourceKey = null } : item).ToArray();
+        var duplicates = result.Where(x => x.SourceLocator != null).GroupBy(x => x.SourceLocator).Where(x => x.Count() > 1).Select(x => x.Key).ToHashSet();
+        return result.Select(item => duplicates.Contains(item.SourceLocator) ? item with { SourceLocator = null } : item).ToArray();
     }
     public void Dispose() => device.Dispose();
 }
@@ -60,11 +56,16 @@ internal sealed class FakeUsbSource(string root) : IUsbSource
     public IReadOnlyList<UsbItem> Scan() => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Where(UsbSources.IsMedia).OrderBy(x => x).Select(path =>
     {
         var info = new FileInfo(path);
+        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "\n" + info.LastWriteTimeUtc.Ticks + "\n" + info.Length)));
+        bool volatileId = File.Exists(path + ".volatile-id");
         return new UsbItem(info.Name, info.Length, () => {
             if (File.Exists(path + ".track")) File.WriteAllText(path + ".opened", "");
+            if (File.Exists(path + ".unreadable")) throw new UnauthorizedAccessException("Simulated unreadable source.");
+            if (File.Exists(path + ".diskfull")) throw new IOException("Simulated full disk.", unchecked((int)0x80070070));
+            if (File.Exists(path + ".transient")) { File.Delete(path + ".transient"); throw new IOException("Simulated transient error."); }
             return info.Name.StartsWith("disconnect-", StringComparison.OrdinalIgnoreCase) && !File.Exists(Path.Combine(root, "reconnected"))
             ? new MemoryStream(File.ReadAllBytes(path)[..(int)(info.Length / 2)]) : File.OpenRead(path); },
-            () => File.OpenRead(path + ".thumb"), Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path + "\n" + info.LastWriteTimeUtc.Ticks + "\n" + info.Length))), File.Exists(path + ".unknown-date") ? null : info.CreationTime);
+            () => File.OpenRead(path + ".thumb"), volatileId ? null : key, File.Exists(path + ".unknown-date") ? null : info.CreationTime, SourceLocator: volatileId ? key : null);
     }).ToArray();
     public void Dispose() { }
 }

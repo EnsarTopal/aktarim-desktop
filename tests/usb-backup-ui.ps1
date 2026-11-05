@@ -11,6 +11,7 @@ $historyFile = Join-Path $historyDir 'history.json'; $damaged = '{ invalid histo
 [IO.File]::WriteAllText($historyFile, $damaged)
 [IO.File]::WriteAllText((Join-Path $source 'a/same.jpg'), 'first fake photo')
 [IO.File]::WriteAllText((Join-Path $source 'b/same.jpg'), 'other fake photo with more bytes')
+[IO.File]::WriteAllText((Join-Path $source 'b/same.jpg.volatile-id'), '')
 [IO.File]::SetCreationTime((Join-Path $source 'a/same.jpg'), [DateTime]::new(2020, 1, 2))
 [IO.File]::SetCreationTime((Join-Path $source 'b/same.jpg'), [DateTime]::new(2022, 1, 2))
 $process = $null
@@ -51,7 +52,7 @@ try {
     Click 'RecoverHistory'; Click 'CancelHistoryRecovery'
     if ([IO.File]::ReadAllText($historyFile) -ne $damaged) { throw 'Cancelled recovery changed history.' }
     Click 'RecoverHistory'; Click 'ConfirmHistoryRecovery'
-    for ($i = 0; $i -lt 100; $i++) { if ((Test-Path $historyFile) -and [IO.File]::ReadAllText($historyFile) -eq '[]') { break }; Start-Sleep -Milliseconds 100 }
+    for ($i = 0; $i -lt 100; $i++) { try { if ((Test-Path $historyFile) -and [IO.File]::ReadAllText($historyFile) -eq '[]') { break } } catch [IO.IOException] { }; Start-Sleep -Milliseconds 100 }
     $archive = @(Get-ChildItem $historyDir -Filter 'history.corrupt-*.json')
     if ($archive.Count -ne 1 -or [IO.File]::ReadAllText($archive[0].FullName) -ne $damaged -or [IO.File]::ReadAllText($historyFile) -ne '[]') { throw 'Approved recovery failed to preserve the damaged history.' }
     Get-ChildItem $target -File | Remove-Item
@@ -90,6 +91,13 @@ try {
     Click 'Nav4'
     $dateSetting = (Find-Element 'UsbDateFolders').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
     if ($dateSetting.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) { $dateSetting.Toggle() }
+    $verifiedSource = Join-Path $source 'verify.jpg'
+    [IO.File]::WriteAllText($verifiedSource, 'AAAA'); [IO.File]::WriteAllText(($verifiedSource + '.volatile-id'), '')
+    $modified = [IO.File]::GetLastWriteTimeUtc($verifiedSource)
+    Click 'Nav1'; Click 'ScanMedia'; Click 'BackupNew'; Wait-Backup 'Backup complete: 1 copied, 4 skipped'
+    [IO.File]::WriteAllText($verifiedSource, 'BBBB'); [IO.File]::SetLastWriteTimeUtc($verifiedSource, $modified)
+    Click 'ScanMedia'; Click 'BackupNew'; Wait-Backup 'Backup complete: 1 copied, 4 skipped'
+    if ([IO.File]::ReadAllText((Join-Path $target 'verify.jpg')) -ne 'AAAA' -or [IO.File]::ReadAllText((Join-Path $target 'verify (1).jpg')) -ne 'BBBB') { throw 'Changed source with identical metadata was skipped or overwritten.' }
     Write-Output 'PASS WPF fake USB backup, rescan skip, same names and deleted backup recreation'
 }
 finally {

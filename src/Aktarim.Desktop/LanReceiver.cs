@@ -133,6 +133,7 @@ internal sealed class LanReceiver : IAsyncDisposable
                 var chunks = await store.StatusAsync(id);
                 return Results.Ok(new { id, chunkSize = ChunkSize, chunks, completed = false, name = request.Name });
             }
+            catch (Exception e) when (TransferErrors.IsDiskFull(e)) { return Results.StatusCode(507); }
             catch (Exception e) when (e is ArgumentException or IOException or InvalidOperationException) { return Results.BadRequest(); }
         });
         bool Allowed(HttpContext ctx, Guid id) { lock (sync) return Authorized(ctx) && allowed.Contains(id); }
@@ -145,6 +146,7 @@ internal sealed class LanReceiver : IAsyncDisposable
                 await store.PutAsync(id, index, ctx.Request.Body, ctx.Request.ContentLength.Value, ctx.Request.Headers["X-Chunk-Sha256"].ToString(), ctx.RequestAborted);
                 return Results.Ok();
             }
+            catch (Exception e) when (TransferErrors.IsDiskFull(e)) { return Results.StatusCode(507); }
             catch (Exception e) when (e is ArgumentException or IOException or InvalidOperationException) { return Results.BadRequest(); }
         });
         app.MapPost("/v1/transfers/{id:guid}/commit", async (HttpContext ctx, Guid id) =>
@@ -156,6 +158,7 @@ internal sealed class LanReceiver : IAsyncDisposable
                 var path = await store.CommitAsync(id);
                 return Results.Ok(new { name = Path.GetFileName(path) });
             }
+            catch (Exception e) when (TransferErrors.IsDiskFull(e)) { return Results.StatusCode(507); }
             catch (Exception e) when (e is IOException or InvalidOperationException) { return Results.BadRequest(); }
             finally { commitGate.Release(); }
         });

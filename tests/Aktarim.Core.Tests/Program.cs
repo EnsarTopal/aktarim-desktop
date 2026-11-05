@@ -242,6 +242,9 @@ try
         return true;
     }
     Check(await Backup("device-object-one-version-one", backupBytes), "new USB item copied");
+    Check(await history.CheckAsync(null, backupBytes.Length, backupRoot) == "identity-unknown", "uncertain source diagnostic");
+    Check(await history.CheckAsync("unknown-source", backupBytes.Length, backupRoot) == "no-record", "missing record diagnostic");
+    Check(await history.CheckAsync("device-object-one-version-one", backupBytes.Length, backupRoot) == "verified", "verified copy diagnostic");
     history = new UsbHistory(Path.Combine(root, "history"));
     Check(!await Backup("device-object-one-version-one", backupBytes), "verified USB backup skipped after restart");
     Check(await Backup("device-object-two-version-one", otherBytes), "same name different USB identity copied");
@@ -249,6 +252,7 @@ try
     var secondBackup = Path.Combine(backupRoot, "same (1).jpg");
     Check(Hash(await File.ReadAllBytesAsync(firstBackup)) == Hash(backupBytes) && Hash(await File.ReadAllBytesAsync(secondBackup)) == Hash(otherBytes), "same named backups preserved");
     File.Delete(firstBackup);
+    Check(await history.CheckAsync("device-object-one-version-one", backupBytes.Length, backupRoot) == "copy-missing-or-changed", "deleted copy diagnostic");
     Check(await Backup("device-object-one-version-one", backupBytes) && Hash(await File.ReadAllBytesAsync(firstBackup)) == Hash(backupBytes), "deleted backup recreated");
     await File.WriteAllTextAsync(firstBackup, "changed");
     Check(await Backup("device-object-one-version-one", backupBytes) && await File.ReadAllTextAsync(firstBackup) == "changed", "modified backup preserved and recopied");
@@ -258,6 +262,16 @@ try
     Check(await Backup(null, backupBytes) && await Backup(null, backupBytes), "uncertain USB identity never skipped");
     Check(!await history.IsBackedUpAsync("device-object-one-version-one", backupBytes.Length, Path.Combine(root, "other-target")), "different destination not skipped");
     Check((await history.EntriesAsync()).Count == 7, "only successful USB copies recorded");
+    var contentHistory = new UsbHistory(Path.Combine(root, "content-history"));
+    var contentPath = await UsbCopy.CopyAsync(new MemoryStream(backupBytes), backupBytes.Length, Path.Combine(root, "content-target"), "photo.jpg");
+    var contentTarget = Path.GetDirectoryName(contentPath)!;
+    await contentHistory.AddAsync(null, backupBytes.Length, contentTarget, contentPath, Hash(backupBytes), "stable-device-location");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location") == "content-required", "unstable WPD ID requires source content verification");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location", Hash(backupBytes)) == "verified", "source and destination hashes allow safe skip across connections");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location", Hash(otherBytes)) == "source-changed", "same locator and size never skip different content");
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "different-location", Hash(backupBytes)) == "no-record", "same content at another source location is not guessed");
+    File.Delete(contentPath);
+    Check(await contentHistory.CheckAsync(null, backupBytes.Length, contentTarget, "stable-device-location", Hash(backupBytes)) == "copy-missing-or-changed", "source hash does not mask deleted destination");
     var brokenDir = Path.Combine(root, "broken-history");
     Directory.CreateDirectory(brokenDir);
     var brokenPath = Path.Combine(brokenDir, "history.json");

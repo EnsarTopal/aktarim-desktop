@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace Aktarim.Core;
 
-public sealed record UsbHistoryEntry(string? SourceKey, long Length, string Destination, string Path, string Sha256, DateTime CompletedUtc);
+public sealed record UsbHistoryEntry(string? SourceKey, long Length, string Destination, string Path, string Sha256, DateTime CompletedUtc, string? SourceLocator = null);
 public sealed class UsbHistoryCorruptException : IOException
 {
     public UsbHistoryCorruptException(Exception? inner = null) : base("Invalid USB history.", inner) { }
@@ -78,8 +78,12 @@ public sealed class UsbHistory
     }
 
     public async Task<bool> IsBackedUpAsync(string? sourceKey, long length, string destination)
+        => await CheckAsync(sourceKey, length, destination) == "verified";
+
+    public async Task<string> CheckAsync(string? sourceKey, long length, string destination, string? sourceLocator = null, string? sourceSha256 = null)
     {
-        if (string.IsNullOrWhiteSpace(sourceKey)) return false;
+        if (string.IsNullOrWhiteSpace(sourceKey)) sourceKey = null;
+        if (string.IsNullOrWhiteSpace(sourceKey) && string.IsNullOrWhiteSpace(sourceLocator)) return "identity-unknown";
         destination = Path.GetFullPath(destination);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         await gate.WaitAsync();
@@ -87,7 +91,12 @@ public sealed class UsbHistory
         {
             using var guard = SafeDirectories.Open(directory, create: true, privateFrom: directory);
             using var processLock = await LockAsync();
-            foreach (var entry in (await ReadAsync()).Where(x => x.SourceKey == sourceKey && x.Length == length && string.Equals(x.Destination, destination, comparison)).Reverse())
+            var matching = (await ReadAsync()).Where(x => (sourceKey != null ? x.SourceKey == sourceKey : x.SourceLocator == sourceLocator) && x.Length == length && string.Equals(x.Destination, destination, comparison)).Reverse().ToArray();
+            if (matching.Length == 0) return "no-record";
+            if (sourceKey == null && sourceSha256 == null) return "content-required";
+            if (sourceKey == null) matching = matching.Where(x => string.Equals(x.Sha256, sourceSha256, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matching.Length == 0) return "source-changed";
+            foreach (var entry in matching)
             {
                 try
                 {
@@ -97,16 +106,16 @@ public sealed class UsbHistory
                     using var targetGuard = SafeDirectories.Open(Path.GetDirectoryName(path)!);
                     await using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0 && input.Length == length &&
-                        Convert.ToHexString(await SHA256.HashDataAsync(input)).Equals(entry.Sha256, StringComparison.OrdinalIgnoreCase)) return true;
+                        Convert.ToHexString(await SHA256.HashDataAsync(input)).Equals(entry.Sha256, StringComparison.OrdinalIgnoreCase)) return "verified";
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
             }
-            return false;
+            return "copy-missing-or-changed";
         }
         finally { gate.Release(); }
     }
 
-    public async Task AddAsync(string? sourceKey, long length, string destination, string path, string sha256)
+    public async Task AddAsync(string? sourceKey, long length, string destination, string path, string sha256, string? sourceLocator = null)
     {
         await gate.WaitAsync();
         try
@@ -114,7 +123,7 @@ public sealed class UsbHistory
             using var guard = SafeDirectories.Open(directory, create: true, privateFrom: directory);
             using var processLock = await LockAsync();
             var entries = new List<UsbHistoryEntry>(await ReadAsync());
-            entries.Add(new(sourceKey, length, Path.GetFullPath(destination), Path.GetFullPath(path), sha256, DateTime.UtcNow));
+            entries.Add(new(sourceKey, length, Path.GetFullPath(destination), Path.GetFullPath(path), sha256, DateTime.UtcNow, sourceLocator));
             string temp = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
